@@ -82,6 +82,20 @@ def _frame_sink():
     return _sink_class.alloc().init()
 
 
+def camera_to_use(cfg: dict, cameras: list[CameraInfo], current_id: str) -> CameraInfo | None:
+    """The camera to switch to now, or None to stay: the chosen one as soon as it's available
+    (e.g. an iPhone that connects late), otherwise any camera if the current one has gone."""
+    if not cameras:
+        return None
+    chosen = next((c for c in cameras if c.id == cfg.get("camera_id")), None) or \
+        next((c for c in cameras if cfg.get("camera_name") and c.name == cfg.get("camera_name")), None)
+    if chosen is not None and chosen.id != current_id:
+        return chosen
+    if all(c.id != current_id for c in cameras):
+        return cameras[0]
+    return None
+
+
 def camera_access() -> bool:
     """Ask for camera permission if it hasn't been decided yet; True when allowed."""
     import AVFoundation as AV

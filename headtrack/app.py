@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from .config import CONFIG_PATH, MODEL_PATH, load_config, save_settings, set_look_range
-from .camera import list_cameras, pick_camera
+from .camera import camera_to_use, list_cameras, pick_camera
 from .macos import disable_app_nap, play_sound, set_thread_interactive, start_global_hotkeys
 from .preview import preview_process, snapshot, status_lines
 from .state import Shared, close_diag, diag, enable_diag
@@ -122,6 +122,19 @@ def main() -> int:
         with sh.lock:
             sh.cam_list = cameras
 
+    def watch_cameras():
+        """Follow cameras coming and going: switch to the chosen one when it shows up (an iPhone
+        connecting late), or to another one if the camera in use disappears."""
+        while not sh.quit:
+            time.sleep(3)
+            cameras = list_cameras()
+            with sh.lock:
+                sh.cam_list, current = cameras, sh.cam_id
+            switch = camera_to_use(cfg, cameras, current)
+            if switch is not None:
+                print(f"camera: switching to {switch.name}", flush=True)
+                tracker.request_camera(switch)
+
     def select_camera(index: int):
         cameras = sh.cam_list
         if index >= len(cameras) or cameras[index].id == sh.cam_id:
@@ -172,6 +185,7 @@ def main() -> int:
 
     tracker.start()
     link.start()
+    threading.Thread(target=watch_cameras, daemon=True, name="cameras").start()
     try:
         run_engine(sh, cfg, status_q, preview)
     except KeyboardInterrupt:

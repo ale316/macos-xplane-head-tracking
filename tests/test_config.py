@@ -2,7 +2,7 @@ import copy
 import json
 
 from headtrack.config import DEFAULT_CONFIG, load_config, save_settings, set_look_range
-from headtrack.camera import CameraInfo, pick_camera
+from headtrack.camera import CameraInfo, camera_to_use, pick_camera
 
 
 def test_look_range_limits_and_pitch_follows():
@@ -44,3 +44,13 @@ def test_saved_camera_is_found_by_id_then_name():
     assert pick_camera(dict(cfg, camera_id="other"), [facetime, iphone]) == iphone  # same name, new ID
     assert pick_camera(cfg, [facetime]) == facetime  # iPhone not around: the first camera
     assert pick_camera(cfg, []) is None
+
+
+def test_switches_to_the_chosen_camera_when_it_appears_and_away_from_a_missing_one():
+    facetime, iphone = CameraInfo("A1", "FaceTime HD Camera"), CameraInfo("B2", "iPhone Camera")
+    cfg = dict(DEFAULT_CONFIG, camera_id="B2", camera_name="iPhone Camera")
+    assert camera_to_use(cfg, [facetime], "A1") is None  # iPhone not around yet: stay
+    assert camera_to_use(cfg, [facetime, iphone], "A1") == iphone  # it connected: switch to it
+    assert camera_to_use(cfg, [facetime, iphone], "B2") is None  # already on it
+    assert camera_to_use(cfg, [facetime], "B2") == facetime  # it went away: use what's there
+    assert camera_to_use(cfg, [], "B2") is None

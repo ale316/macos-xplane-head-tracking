@@ -56,7 +56,7 @@ If you'd rather not paste a command, download this repository instead (green **C
 
 - **Look range:** how far the view turns when your head is fully turned. Both handles move together; ±90° means a full turn looks straight out the side window.
 - **Smoothness:** from snappy to steady. Towards the top it also makes the view glide, rather than snap, to where you look.
-- **Camera:** pick a camera from the list. It's remembered, and found again next time. Cameras that can't be used right now (e.g. the built-in one with the lid closed) aren't listed.
+- **Camera:** pick a camera from the list. It's remembered: if it isn't there yet when you start (e.g. the iPhone connects a bit later), the tracker switches to it as soon as it shows up. If the camera in use disappears, it falls back to another one. Cameras that can't be used right now (e.g. the built-in one with the lid closed) aren't listed.
 - **Rotation:** detects when the camera is turned sideways or upside down; click it to force 0/90/180/270°.
 
 Everything you set in the window is saved to `config.json` in the same folder.
@@ -78,6 +78,7 @@ The global hotkeys need **Input Monitoring** permission for Terminal (System Set
 | Problem | Fix |
 |---|---|
 | "X-Plane: waiting for 127.0.0.1:49000" | Make sure X-Plane is running, and check under X-Plane's Settings › Network that its UDP receive port is 49000. |
+| iPhone not in the Camera list | macOS isn't offering it as a camera right now. For Continuity Camera, the iPhone must be locked, still (on a mount or stand) and near the Mac, with Wi-Fi and Bluetooth on and the same Apple ID on both. Also check that iPhone Settings › General › AirPlay & Continuity › Continuity Camera is on. A USB cable helps. |
 | "Could not open the camera" | Allow Terminal under System Settings › Privacy & Security › Camera, or pick another camera. |
 | An axis moves the wrong way | Set `"invert": true` for that axis in `config.json` (see below). |
 | Laggy or jittery | Improve the lighting, then adjust the Smoothness slider. `./run.sh --diag diag.csv` (in the install folder) records timings you can attach to a bug report. |
