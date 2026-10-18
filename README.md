@@ -51,4 +51,4 @@ bash install.sh && .venv/bin/python -m pip install -r requirements-dev.txt && .v
 
 ## License
 
-MIT. Built on [MediaPipe](https://github.com/google-ai-edge/mediapipe), OpenCV and PyObjC. Not affiliated with Laminar Research.
+Free for personal and other non-commercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE); for commercial use, please get in touch. Built on [MediaPipe](https://github.com/google-ai-edge/mediapipe), OpenCV and PyObjC. Not affiliated with Laminar Research.
