@@ -1,0 +1,67 @@
+import copy
+
+import cv2
+import numpy as np
+
+from headtrack.config import DEFAULT_CONFIG
+from headtrack.preview import CTRL_H, SLIDER_X0, SLIDER_X1, CockpitView, PreviewUI
+
+
+def test_sim_view_turns_the_right_way():
+    view = CockpitView(512)
+    mh, mw = view.map.shape[:2]
+    right = view.render(90, 0, 0, 64, 32, 60)[16, 32].astype(int)
+    up = view.render(0, 45, 0, 64, 32, 60)[16, 32].astype(int)
+    assert np.abs(right - view.map[mh // 2, int(mw * 0.75)].astype(int)).max() < 30
+    assert np.abs(up - view.map[int(mh * 0.25), mw // 2].astype(int)).max() < 30
+
+
+class Commands(list):
+    put = list.append
+
+
+def make_ui():
+    ui = PreviewUI(copy.deepcopy(DEFAULT_CONFIG), Commands(), "")
+    ui.draw(None, None)  # lays out the buttons
+    return ui
+
+
+def click(ui, x, y):
+    ui.on_mouse(cv2.EVENT_LBUTTONDOWN, int(x), int(y), 0, None)
+    ui.on_mouse(cv2.EVENT_LBUTTONUP, int(x), int(y), 0, None)
+
+
+def test_range_slider_handles_are_symmetric_and_save_on_release():
+    ui = make_ui()
+    y = ui.controls_top() + 28
+    mid, half = (SLIDER_X0 + SLIDER_X1) / 2, (SLIDER_X1 - SLIDER_X0) / 2
+    click(ui, mid + half / 2, y)
+    right = ui.range
+    click(ui, mid - half / 2, y)
+    assert right == ui.range and abs(right - 90) <= 1
+    assert ui.cmd_q[-1] == ("range", ui.range, True)
+
+
+def test_smoothness_slider():
+    ui = make_ui()
+    ui.on_mouse(cv2.EVENT_LBUTTONDOWN, SLIDER_X1, ui.controls_top() + 68, 0, None)
+    assert ui.smoothing == 100 and ui.cmd_q[-1] == ("smoothing", 100, False)
+
+
+def test_preview_button_switches_off_and_shrinks_window():
+    ui = make_ui()
+    (x0, y0, x1, y1), cmd = ui.buttons[0]
+    assert cmd == ("preview",)
+    click(ui, (x0 + x1) / 2, (y0 + y1) / 2)
+    assert not ui.preview_on and ui.cmd_q[-1] == ("preview", False)
+    assert ui.draw(None, None).shape[0] == ui.controls_top() + CTRL_H
+
+
+def test_camera_button_cycles_rotation():
+    ui = make_ui()
+    rect, _ = next(b for b in ui.buttons if b[1] == ("rotation",))
+    seen = []
+    for _ in range(5):
+        click(ui, (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+        seen.append(ui.cmd_q[-1][1])
+    assert seen == [0, 90, 180, 270, "auto"]

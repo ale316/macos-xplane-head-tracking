@@ -1,0 +1,14 @@
+# set up by run.sh
+.venv/
+models/
+
+# your own settings and logs
+config.json
+config-*.json
+diag*.csv
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
