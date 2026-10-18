@@ -1,7 +1,8 @@
 """X-Plane link over its built-in UDP interface (no plugin needed).
 
-RREF subscriptions read X-Plane's own head position, view type and field of view; DREF
-packets write sim/graphics/view/pilots_head_* at a fixed rate.
+DREF packets write sim/graphics/view/pilots_head_* at a fixed rate; RREF subscriptions read
+the view type, field of view and flight time. The seat position comes from the loaded
+aircraft's .acf file (see EyePoint).
 """
 from __future__ import annotations
 
@@ -70,26 +71,31 @@ class EyePoint:
 
     def __init__(self, folder: Path | None):
         self.folder = folder
-        self.log_stamp = None
+        self.log_read = 0  # bytes of Log.txt already looked at (it only grows, until X-Plane restarts)
         self.acf = None
         self.point: np.ndarray | None = None
 
     def refresh(self) -> np.ndarray | None:
         if self.folder is None:
             return None
-        log = self.folder / "Log.txt"
         try:
-            st = log.stat()
-            if (st.st_mtime, st.st_size) != self.log_stamp:
-                self.log_stamp = (st.st_mtime, st.st_size)
-                loads = re.findall(r"Loading airplane number 0 with (.+?\.acf)", log.read_text(errors="replace"))
-                if loads and loads[-1] != self.acf:
-                    self.acf = loads[-1]
-                    self.point = acf_eye_point((self.folder / self.acf).read_text(errors="replace"))
-                    print(f"aircraft: {Path(self.acf).stem}, eye point {self.point}", flush=True)
+            with open(self.folder / "Log.txt", "rb") as log:
+                size = log.seek(0, 2)
+                if size < self.log_read:  # a new log: X-Plane restarted
+                    self.log_read = 0
+                log.seek(max(0, self.log_read - 200))  # a little overlap, for a line split across reads
+                text = log.read().decode(errors="replace")
+                self.log_read = size
+            loads = re.findall(r"Loading airplane number 0 with (.+?\.acf)", text)
+            if loads and loads[-1] != self.acf:
+                self.acf = loads[-1]
+                self.point = acf_eye_point((self.folder / self.acf).read_text(errors="replace"))
+                print(f"aircraft: {Path(self.acf).stem}, seat at {np.round(self.point, 3)} m", flush=True)
         except OSError:
             pass
         return self.point
+
+
 # Our head convention is yaw right+, pitch up+, roll right+, x right+, y up+, z forward+.
 # X-Plane's aircraft frame has +z pointing aft, so leaning forward means decreasing z.
 XPLANE_SIGN = np.array([1.0, 1.0, 1.0, 1.0, 1.0, -1.0])
@@ -113,8 +119,8 @@ class XPlaneLink(threading.Thread):
         self.sock.bind(("0.0.0.0", 0))
         self.sock.setblocking(False)
         self.names = [DATAREFS[a] for a in AXES] + [VIEW_TYPE_DREF, FOV_DREF, FLIGHT_TIME_DREF]
-        local = cfg["xplane_host"] in ("127.0.0.1", "localhost")
-        self.eye = EyePoint(xplane_folder() if local else None)
+        self.local = cfg["xplane_host"] in ("127.0.0.1", "localhost")
+        self.eye = EyePoint(xplane_folder() if self.local else None)
         self.next_eye_check = 0.0
         self.flight_time = None
         self.values: dict[int, tuple[float, float]] = {}  # index -> (value, rx time)
@@ -200,8 +206,8 @@ class XPlaneLink(threading.Thread):
 
             if now >= self.next_eye_check:
                 self.next_eye_check = now + 1.0
-                if self.eye.folder is None and now - self.last_rx < 2.0 and self.eye.log_stamp is None:
-                    self.eye.folder = xplane_folder() if cfg["xplane_host"] in ("127.0.0.1", "localhost") else None
+                if self.eye.folder is None and self.local and now - self.last_rx < 2.0:
+                    self.eye.folder = xplane_folder()  # X-Plane was started after the tracker
                 self.eye.refresh()
             flight = self.values.get(len(AXES) + 2)
             if flight is not None:

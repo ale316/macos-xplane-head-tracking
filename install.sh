@@ -24,8 +24,19 @@ say() { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 sha256() { shasum -a 256 "$1" | cut -d' ' -f1; }
 
-if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
+main() {
+if [ "$(uname -s)" != Darwin ]; then
+  fail "Sorry, X-Plane Head Tracker only runs on macOS."
+fi
+# Asks the hardware, so a Terminal running under Rosetta still counts as Apple Silicon.
+if [ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null)" != 1 ]; then
   fail "Sorry, X-Plane Head Tracker needs a Mac with Apple Silicon (M1 or newer)."
+fi
+macos=$(sw_vers -productVersion | cut -d. -f1)
+if [ "$macos" -lt 13 ]; then
+  fail "Sorry, X-Plane Head Tracker needs macOS 14 Sonoma or newer (this Mac has $(sw_vers -productVersion))."
+elif [ "$macos" -lt 14 ]; then
+  say "Note: macOS $(sw_vers -productVersion) isn't tested; macOS 14 Sonoma or newer is recommended."
 fi
 
 # Run from a copy of the code, or fetch the latest code (keeps your settings when updating).
@@ -86,3 +97,7 @@ if [ -z "${HEADTRACK_FROM_RUN:-}" ]; then
   echo "or from Terminal with: \"$PWD/run.sh\""
   open -R "Start Head Tracker.command" 2>/dev/null || true
 fi
+}
+
+# Everything above is a function, so a download cut short can't run half an installer.
+main "$@"

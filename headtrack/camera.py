@@ -8,8 +8,9 @@ rate (otherwise auto-exposure halves it in dim light, doubling the camera's late
 from __future__ import annotations
 
 import os
+import platform
 import threading
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,9 +22,13 @@ class CameraInfo:
     name: str
 
 
+_listed_once = False
+
+
 @contextmanager
 def _quiet_stderr():
-    """AVFoundation logs deprecation warnings about Continuity Camera when listing devices."""
+    """AVFoundation logs a deprecation warning about Continuity Camera the first time devices
+    are listed. Silences the process's stderr meanwhile, so only use it for that first time."""
     saved = os.dup(2)
     devnull = os.open(os.devnull, os.O_WRONLY)
     os.dup2(devnull, 2)
@@ -38,11 +43,24 @@ def _quiet_stderr():
 def _devices() -> list:
     import AVFoundation as AV
 
-    types = [AV.AVCaptureDeviceTypeBuiltInWideAngleCamera, AV.AVCaptureDeviceTypeExternal]
-    with _quiet_stderr():
+    global _listed_once
+    # USB cameras and iPhones are "External" from macOS 14; before that "ExternalUnknown".
+    external = AV.AVCaptureDeviceTypeExternal if _macos_major() >= 14 else AV.AVCaptureDeviceTypeExternalUnknown
+    with nullcontext() if _listed_once else _quiet_stderr():
         session = AV.AVCaptureDeviceDiscoverySession.discoverySessionWithDeviceTypes_mediaType_position_(
-            types, AV.AVMediaTypeVideo, AV.AVCaptureDevicePositionUnspecified)
-        return [d for d in session.devices() if not d.isSuspended()]  # e.g. built-in camera with the lid closed
+            [AV.AVCaptureDeviceTypeBuiltInWideAngleCamera, external], AV.AVMediaTypeVideo,
+            AV.AVCaptureDevicePositionUnspecified)
+        devices = session.devices()
+    _listed_once = True
+    # skip suspended cameras, e.g. the built-in one with the lid closed (macOS 14+ knows this)
+    return [d for d in devices if not (d.respondsToSelector_("isSuspended") and d.isSuspended())]
+
+
+def _macos_major() -> int:
+    try:
+        return int(platform.mac_ver()[0].split(".")[0])
+    except ValueError:
+        return 0
 
 
 def list_cameras() -> list[CameraInfo]:
@@ -74,7 +92,9 @@ def _frame_sink():
         import objc
         from Foundation import NSObject
 
-        class HeadtrackFrameSink(NSObject, protocols=[objc.protocolNamed("AVCaptureVideoDataOutputSampleBufferDelegate")]):
+        delegate = objc.protocolNamed("AVCaptureVideoDataOutputSampleBufferDelegate")
+
+        class HeadtrackFrameSink(NSObject, protocols=[delegate]):
             def captureOutput_didOutputSampleBuffer_fromConnection_(self, _output, sample, _connection):
                 self.camera._on_frame(sample)
 
@@ -120,9 +140,6 @@ class Camera:
     def __init__(self, camera_id: str, width: int, height: int, max_fps: float):
         import AVFoundation as AV
         import CoreMedia as CM
-        from libdispatch import dispatch_queue_create
-        from Quartz import kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey
-        from Quartz import kCVPixelFormatType_32BGRA
 
         device = next((d for d in _devices() if str(d.uniqueID()) == camera_id), None)
         if device is None:
@@ -149,6 +166,24 @@ class Camera:
         self.fps = int(min(max_fps, max(r.maxFrameRate() for r in best.videoSupportedFrameRateRanges())))
         self._device = device if device.lockForConfiguration_(None)[0] else None
         self._format = best
+        try:
+            self._start(session, best, width)
+        except Exception:
+            if self._device is not None:  # don't leave the camera locked to us
+                self._device.unlockForConfiguration()
+            raise
+        active = CM.CMVideoFormatDescriptionGetDimensions(device.activeFormat().formatDescription())
+        frame = device.activeVideoMinFrameDuration()
+        self.mode = (f"{active.width}x{active.height} at {frame.timescale / max(frame.value, 1):.0f} fps"
+                     + ("" if self._device is not None else " (couldn't lock the camera's settings)"))
+
+    def _start(self, session, best, width: int):
+        import AVFoundation as AV
+        import CoreMedia as CM
+        from libdispatch import dispatch_queue_create
+        from Quartz import kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey
+        from Quartz import kCVPixelFormatType_32BGRA
+
         self._apply_format()  # with the device in the session, this also stops presets overriding the format
 
         dims = CM.CMVideoFormatDescriptionGetDimensions(best.formatDescription())
@@ -169,10 +204,6 @@ class Camera:
         session.startRunning()
         self._apply_format()  # starting the session can switch formats; set it again
         self._session = session
-        active = CM.CMVideoFormatDescriptionGetDimensions(device.activeFormat().formatDescription())
-        frame = device.activeVideoMinFrameDuration()
-        self.mode = (f"{active.width}x{active.height} at {frame.timescale / max(frame.value, 1):.0f} fps"
-                     + ("" if self._device is not None else " (couldn't lock the camera's settings)"))
 
     def _apply_format(self):
         """Fastest format and a fixed frame rate. The device stays locked while open, so

@@ -1,4 +1,4 @@
-"""macOS integration: scheduling, camera frame-rate lock, global hotkeys, sounds."""
+"""macOS integration: App Nap and thread priority, global hotkeys, sounds, window focus."""
 from __future__ import annotations
 
 import ctypes

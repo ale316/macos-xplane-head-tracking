@@ -43,18 +43,21 @@ def status_lines(sh: Shared, cfg: dict) -> list[str]:
         tr = f"Tracking: hand at face - {'holding view' if cfg['hand_at_face'] == 'hold' else 'steadied'}"
     else:
         tr = "Tracking: OK"
-    n = sh.noise
     if sh.cam_target_fps and 0 < sh.cam_fps < 0.75 * sh.cam_target_fps:
         xp += f"   camera at {sh.cam_fps:.0f} of {sh.cam_target_fps} fps: Video Effects on? (Control Center)"
-    tr += f"   look +/-{cfg['axes']['yaw']['output_max']:.0f}/{cfg['axes']['pitch']['output_max']:.0f} deg"
-    return [xp, f"{tr}   smooth {sh.smoothing:.0f}%   lean {'ON' if sh.lean else 'OFF'}   cam {sh.cam_fps:.0f} fps{' (locked)' if 'locked at' in sh.cam_info else ''}{f' rot {sh.cam_rotation}' if sh.cam_rotation else ''}",
+    look = f"look +/-{cfg['axes']['yaw']['output_max']:.0f}/{cfg['axes']['pitch']['output_max']:.0f} deg"
+    cam = f"cam {sh.cam_fps:.0f} fps" + (" (locked)" if "locked at" in sh.cam_info else "")
+    if sh.cam_rotation:
+        cam += f" rot {sh.cam_rotation}"
+    n = sh.noise
+    return [xp,
+            f"{tr}   {look}   smooth {sh.smoothing:.0f}%   lean {'ON' if sh.lean else 'OFF'}   {cam}",
             f"noise: yaw {n[0]:.2f} pit {n[1]:.2f} roll {n[2]:.2f} deg  x {n[3]:.2f} y {n[4]:.2f} z {n[5]:.2f} cm"]
 
 
 STATUS_FIELDS = ("error", "xp_connected", "xp_view", "xp_active", "xp_fov", "paused", "recentering", "face_ok",
-                 "hand_at_face", "hand_boxes",
-                 "smoothing", "lean", "cam_fps", "cam_info", "cam_target_fps", "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw",
-                 "target", "landmarks")
+                 "hand_at_face", "hand_boxes", "smoothing", "lean", "cam_fps", "cam_info", "cam_target_fps",
+                 "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw", "target", "landmarks")
 
 
 def snapshot(sh: Shared, cfg: dict, with_frame: bool) -> dict:

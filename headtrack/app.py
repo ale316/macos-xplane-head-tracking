@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing
+import platform
 import queue
+import sys
 import threading
 import time
 from pathlib import Path
 
-from .config import CONFIG_PATH, MODEL_PATH, load_config, save_settings, set_look_range
+from . import __version__
+from .config import CONFIG_PATH, MODEL_PATH, ConfigError, load_config, save_settings, set_look_range
 from .camera import camera_to_use, list_cameras, pick_camera
 from .macos import disable_app_nap, play_sound, set_thread_interactive, start_global_hotkeys
 from .preview import preview_process, snapshot, status_lines
@@ -52,18 +55,29 @@ def main() -> int:
     ap.add_argument("--no-preview", action="store_true", help="run without the camera window")
     ap.add_argument("--diag", type=Path, help="log frame / send / focus timing to this CSV (for debugging lag)")
     ap.add_argument("--list-cameras", action="store_true", help="list cameras and their numbers")
+    ap.add_argument("--version", action="version", version=f"X-Plane Head Tracker {__version__}")
     args = ap.parse_args()
+
+    if sys.platform != "darwin" or platform.machine() != "arm64":
+        print("Sorry, X-Plane Head Tracker only runs on Macs with Apple Silicon (M1 or newer).")
+        return 1
 
     if args.list_cameras:
         for i, cam in enumerate(list_cameras()):
             print(f"{i}: {cam.name}")
         return 0
 
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as e:
+        print(e)
+        return 1
     cameras = list_cameras()
-    if args.camera is not None and args.camera < len(cameras):
+    if args.camera is not None and 0 <= args.camera < len(cameras):
         camera = cameras[args.camera]
     else:
+        if args.camera is not None:
+            print(f"There's no camera {args.camera} (see --list-cameras); using the saved one.")
         camera = pick_camera(cfg, cameras)
     if args.host:
         cfg["xplane_host"] = args.host

@@ -61,7 +61,8 @@ def test_filter_follows_real_motion():
 def test_smoothing_scale():
     assert smoothing_k(0) < smoothing_k(40) < smoothing_k(100) == smoothing_k(150)
     # the top of the slider adds slower, smoother easing and less prediction; the default barely changes
-    assert smoothing_ease(0.03, 0) == 0.03 and smoothing_ease(0.03, 40) < 0.04 and smoothing_ease(0.03, 100) == pytest.approx(0.3)
+    assert smoothing_ease(0.03, 0) == 0.03 and smoothing_ease(0.03, 40) < 0.04
+    assert smoothing_ease(0.03, 100) == pytest.approx(0.3)
     assert smoothing_fill(0) == 1.0 and smoothing_fill(40) > 0.95 and smoothing_fill(100) == 0.0
 
 

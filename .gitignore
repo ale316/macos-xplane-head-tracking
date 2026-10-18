@@ -7,6 +7,7 @@ Start Head Tracker.command
 # your own settings and logs
 config.json
 config-*.json
+config.json.bak
 diag*.csv
 
 __pycache__/

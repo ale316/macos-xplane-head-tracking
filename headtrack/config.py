@@ -77,10 +77,18 @@ def deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+class ConfigError(Exception):
+    pass
+
+
 def load_config(path: Path) -> dict:
     cfg = copy.deepcopy(DEFAULT_CONFIG)
     if path.exists():
-        user = json.loads(path.read_text())
+        try:
+            user = json.loads(path.read_text())
+        except json.JSONDecodeError as e:
+            raise ConfigError(f"{path} isn't valid JSON ({e.msg}, line {e.lineno}). "
+                              "Fix it, or delete it to go back to the defaults.") from None
         if "smoothing_level" in user and "smoothing" not in user:  # older config: levels 1-5
             user["smoothing"] = {1: 15, 2: 23, 3: 38, 4: 54, 5: 69}.get(user["smoothing_level"], 40)
         cfg = deep_merge(cfg, user)

@@ -145,6 +145,23 @@ class Tracker(threading.Thread):
             self.shared.error = None
         return cam
 
+    def _wait_for_camera(self) -> Camera | None:
+        """Open the chosen camera, retrying every 2 s (or right away with a newly picked one)
+        until it works, e.g. while an iPhone reconnects."""
+        while not self.shared.quit:
+            if self._new_camera is not None:
+                self.camera, self._new_camera = self._new_camera, None
+            cam = self._open_camera(self.camera)
+            if cam is not None:
+                return cam
+            with self.shared.lock:
+                self.shared.error = self.shared.error or "Could not open the camera. Pick another camera."
+            for _ in range(10):
+                if self._new_camera is not None or self.shared.quit:
+                    break
+                time.sleep(0.2)
+        return None
+
     def set_rotation_mode(self, mode):
         """'auto' or a fixed clockwise rotation (0/90/180/270) for the camera image."""
         self.rotation_mode = mode
@@ -234,17 +251,10 @@ class Tracker(threading.Thread):
 
         if not camera_access():
             with self.shared.lock:
-                self.shared.error = ("No camera access. Allow Terminal under System Settings > "
-                                     "Privacy & Security > Camera, then start again.")
+                self.shared.error = ("No camera access. Allow your terminal app (e.g. Terminal) under System "
+                                     "Settings > Privacy & Security > Camera, then start again.")
             return
-        cam = self._open_camera(self.camera)
-        while cam is None and not self.shared.quit:  # wait for another camera to be picked
-            with self.shared.lock:
-                self.shared.error = self.shared.error or "Could not open the camera. Pick another camera."
-            time.sleep(0.2)
-            if self._new_camera is not None:
-                self.camera, self._new_camera = self._new_camera, None
-                cam = self._open_camera(self.camera)
+        cam = self._wait_for_camera()
         if cam is None:
             return
         if self.cfg["hand_at_face"] != "off" and HAND_MODEL_PATH.exists():
@@ -261,7 +271,7 @@ class Tracker(threading.Thread):
         probe_opts = vision.FaceLandmarkerOptions(base_options=BaseOptions(model_asset_path=str(MODEL_PATH)),
                                                   output_facial_transformation_matrixes=True)
         t0 = time.monotonic()
-        last_ts = -1
+        last_ts, misses = -1, 0
         fps_t, fps_n = time.monotonic(), 0
         with self.shared.lock:
             self.shared.cam_rotation, self.shared.cam_rotation_mode = self.rotation, self.rotation_mode
@@ -269,20 +279,24 @@ class Tracker(threading.Thread):
                 vision.FaceLandmarker.create_from_options(probe_opts) as probe_lm:
             while not self.shared.quit:
                 if self._new_camera is not None:
-                    new, self._new_camera = self._new_camera, None
                     cam.close()
-                    cam = self._open_camera(new) or self._open_camera(self.camera)
+                    cam = self._wait_for_camera()
                     if cam is None:
-                        with self.shared.lock:
-                            self.shared.error = "Could not open the camera."
-                        return
-                    self.camera = new if self.shared.cam_id == new.id else self.camera
+                        break
                     self.filter.reset()
                     self.prev = None
                     self.request_recenter()  # a different camera means a new neutral pose
                 raw_frame, captured = cam.read()
                 if raw_frame is None:
+                    misses += 1
+                    if misses >= 2:  # no frames for 2 s: unplugged, out of range or asleep; reopen it
+                        print("camera: no frames, reopening", flush=True)
+                        cam.close()
+                        cam, misses = self._wait_for_camera(), 0
+                        if cam is None:
+                            break
                     continue
+                misses = 0
                 now = time.monotonic()
                 if self._new_rotation is not None:
                     r, self._new_rotation = self._new_rotation, None
@@ -313,7 +327,8 @@ class Tracker(threading.Thread):
                     fps_t, fps_n = now, 0
         if self.hands is not None:
             self.hands.stop()
-        cam.close()
+        if cam is not None:
+            cam.close()
 
     def _process(self, frame, res, now: float):
         sh = self.shared
