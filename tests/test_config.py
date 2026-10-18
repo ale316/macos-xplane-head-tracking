@@ -2,6 +2,7 @@ import copy
 import json
 
 from headtrack.config import DEFAULT_CONFIG, load_config, save_settings, set_look_range
+from headtrack.macos import pick_camera
 
 
 def test_look_range_limits_and_pitch_follows():
@@ -33,3 +34,10 @@ def test_save_keeps_other_settings(tmp_path):
     assert saved["camera_index"] == 1 and saved["axes"]["yaw"]["exponent"] == 2.0
     assert "smoothing_level" not in saved
     assert (saved["smoothing"], saved["camera_rotation"], saved["axes"]["yaw"]["output_max"]) == (55, 90, 90.0)
+
+
+def test_saved_camera_is_found_by_name():
+    cfg = dict(DEFAULT_CONFIG, camera_index=0, camera_name="iPhone Camera")
+    assert pick_camera(cfg, ["FaceTime HD Camera", "Desk View Camera", "iPhone Camera"]) == 2
+    assert pick_camera(cfg, ["FaceTime HD Camera"]) == 0  # iPhone not around: saved number
+    assert pick_camera(dict(cfg, camera_index=3, camera_name=""), ["FaceTime HD Camera"]) == 0

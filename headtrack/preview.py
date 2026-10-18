@@ -48,7 +48,7 @@ def status_lines(sh: Shared, cfg: dict) -> list[str]:
 
 
 STATUS_FIELDS = ("error", "xp_connected", "xp_view", "xp_active", "xp_fov", "paused", "recentering", "face_ok",
-                 "smoothing", "lean", "cam_fps", "cam_info", "cam_rotation", "cam_rotation_mode", "noise", "raw",
+                 "smoothing", "lean", "cam_fps", "cam_info", "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw",
                  "target", "landmarks")
 
 
@@ -136,7 +136,7 @@ class CockpitView:
 
 
 # Preview layout (pixels). The window is drawn by hand so it can have a two-handled slider.
-UI_W, CAM_H, SIM_H, CTRL_H = 800, 300, 300, 140
+UI_W, CAM_H, SIM_H, CTRL_H = 800, 300, 300, 182
 RANGE_MIN, RANGE_MAX = 30.0, 180.0
 SLIDER_X0, SLIDER_X1 = 150, 640
 
@@ -188,10 +188,10 @@ class PreviewUI:
     @staticmethod
     def rotation_label(st) -> str:
         if st is None:
-            return "Camera: ..."
+            return "Rotation: ..."
         if st["cam_rotation_mode"] == "auto":
-            return f"Camera: auto ({st['cam_rotation']})"
-        return f"Camera: {st['cam_rotation_mode']}"
+            return f"Rotation: auto ({st['cam_rotation']})"
+        return f"Rotation: {st['cam_rotation_mode']}"
 
     def press(self, cmd: tuple):
         if cmd == ("preview",):
@@ -311,24 +311,35 @@ class PreviewUI:
         cv2.putText(img, f"{self.smoothing:.0f}%", (SLIDER_X1 + 20, y + 5), font, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
         cv2.putText(img, "snappy", (SLIDER_X0 - 5, y + 22), font, 0.38, (150, 150, 150), 1, cv2.LINE_AA)
         cv2.putText(img, "steady", (SLIDER_X1 - 40, y + 22), font, 0.38, (150, 150, 150), 1, cv2.LINE_AA)
-        # buttons
+        # camera row: which camera (click for the next one) and its rotation
+        self.buttons = []
+        y0 = top + 98
+        cv2.putText(img, "Camera", (10, y0 + 21), font, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+        name = (st or {}).get("cam_name") or "..."
+        name = name if len(name) <= 30 else name[:29] + "..."
+        x = self.button(img, SLIDER_X0, y0, f"{name}  >", ("camera_next",))
+        self.button(img, x + 10, y0, self.rotation_label(st), ("rotation",))
+        # main buttons
         paused = bool(st and st["paused"])
         lean = bool(st is None or st["lean"])
-        specs = [(f"Preview: {'ON' if self.preview_on else 'OFF'}", ("preview",)),
-                 ("Resume" if paused else "Pause", ("pause",)), ("Recenter", ("recenter",)),
-                 (f"Lean: {'ON' if lean else 'OFF'}", ("lean",)), (self.rotation_label(st), ("rotation",)),
-                 ("Quit", ("quit",))]
-        self.buttons = []
-        x, y0, y1 = 10, top + 98, top + 130
-        for label, cmd in specs:
-            (tw, _), _ = cv2.getTextSize(label, font, 0.5, 1)
-            rect = (x, y0, x + tw + 24, y1)
-            cv2.rectangle(img, rect[:2], rect[2:], (70, 70, 70), -1)
-            cv2.rectangle(img, rect[:2], rect[2:], (120, 120, 120), 1)
-            cv2.putText(img, label, (x + 12, y1 - 11), font, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
-            self.buttons.append((rect, cmd))
-            x = rect[2] + 10
-        cv2.putText(img, self.hotkey_status, (x + 6, y1 - 11), font, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
+        x, y0 = 10, top + 142
+        for label, cmd in ((f"Preview: {'ON' if self.preview_on else 'OFF'}", ("preview",)),
+                           ("Resume" if paused else "Pause", ("pause",)), ("Recenter", ("recenter",)),
+                           (f"Lean: {'ON' if lean else 'OFF'}", ("lean",)), ("Quit", ("quit",))):
+            x = self.button(img, x, y0, label, cmd) + 10
+        cv2.putText(img, self.hotkey_status, (x + 6, y0 + 21), font, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
+
+    def button(self, img, x: int, y: int, label: str, cmd: tuple) -> int:
+        """Draws a button and registers it for clicks; returns its right edge."""
+        import cv2
+
+        (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        rect = (x, y, x + tw + 24, y + 32)
+        cv2.rectangle(img, rect[:2], rect[2:], (70, 70, 70), -1)
+        cv2.rectangle(img, rect[:2], rect[2:], (120, 120, 120), 1)
+        cv2.putText(img, label, (x + 12, y + 21), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+        self.buttons.append((rect, cmd))
+        return rect[2]
 
 
 def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):

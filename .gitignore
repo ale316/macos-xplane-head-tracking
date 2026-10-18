@@ -1,6 +1,8 @@
-# set up by run.sh
+# set up by install.sh
 .venv/
+.tools/
 models/
+Start Head Tracker.command
 
 # your own settings and logs
 config.json

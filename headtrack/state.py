@@ -53,6 +53,8 @@ class Shared:
         self.raw_time = 0.0  # when `raw` became available
         self.cam_fps = 0.0
         self.cam_info = ""
+        self.cam_index = 0
+        self.cam_name = ""
         self.cam_rotation = 0  # rotation currently applied to camera images
         self.cam_rotation_mode = "auto"
         # settings changed from the preview / hotkeys

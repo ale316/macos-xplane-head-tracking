@@ -45,13 +45,10 @@ def lock_camera_fps(index: int, width: int, height: int, want_fps: float):
     after OpenCV has opened the camera. Returns (device to unlock on exit or None, message).
     """
     try:
-        import AVFoundation as AV
         import CoreMedia as CM
+        devs = capture_devices()
     except ImportError:
         return None, "camera fps not locked (pyobjc-framework-AVFoundation not installed)"
-    # Same device order OpenCV's AVFoundation backend uses for camera indices.
-    devs = (list(AV.AVCaptureDevice.devicesWithMediaType_(AV.AVMediaTypeVideo))
-            + list(AV.AVCaptureDevice.devicesWithMediaType_(AV.AVMediaTypeMuxed)))
     if index >= len(devs):
         return None, "camera fps not locked (device not found)"
     dev = devs[index]
@@ -173,14 +170,29 @@ def app_focused() -> bool:
     return bool(NSApplication.sharedApplication().isActive())
 
 
-def list_cameras():
-    import cv2
+def capture_devices() -> list:
+    """Cameras, in the order OpenCV's AVFoundation backend numbers them."""
+    import AVFoundation as AV
+
+    return (list(AV.AVCaptureDevice.devicesWithMediaType_(AV.AVMediaTypeVideo))
+            + list(AV.AVCaptureDevice.devicesWithMediaType_(AV.AVMediaTypeMuxed)))
+
+
+def camera_names() -> list[str]:
     try:
-        print(subprocess.run(["system_profiler", "SPCameraDataType"], capture_output=True, text=True).stdout)
-    except OSError:
-        pass
-    for i in range(5):
-        cap = cv2.VideoCapture(i, cv2.CAP_AVFOUNDATION)
-        if cap.isOpened():
-            print(f"index {i}: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
-        cap.release()
+        return [str(d.localizedName()) for d in capture_devices()]
+    except ImportError:
+        return []
+
+
+def pick_camera(cfg: dict, names: list[str]) -> int:
+    """The saved camera by name if it's connected (numbers shift as cameras come and go)."""
+    if cfg.get("camera_name") in names:
+        return names.index(cfg["camera_name"])
+    index = int(cfg["camera_index"])
+    return index if index < len(names) or not names else 0
+
+
+def list_cameras():
+    for i, name in enumerate(camera_names()):
+        print(f"{i}: {name}")

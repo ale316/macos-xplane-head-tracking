@@ -12,27 +12,37 @@ Free head tracking for **X-Plane 12 on macOS** using the camera you already have
 
 - A Mac with **Apple Silicon** (M1 or newer)
 - **X-Plane 12** (it uses X-Plane's built-in network interface, which is on by default)
-- **Python 3.10 or newer.** If you have [uv](https://docs.astral.sh/uv/), it fetches Python by itself. Otherwise get Python from [python.org](https://www.python.org/downloads/macos/) or Homebrew (`brew install python@3.12`).
+
+Nothing else: the installer brings its own Python.
 
 ## Install
 
-Download this repository (green **Code** button › **Download ZIP**, then unzip it), or clone it:
+Open **Terminal** (in Applications › Utilities), paste this line and press Return:
 
 ```bash
-git clone https://github.com/ale316/macos-xplane-head-tracking.git
+curl -fsSL https://raw.githubusercontent.com/ale316/macos-xplane-head-tracking/main/install.sh | bash
 ```
+
+It installs everything into a folder called **X-Plane Head Tracker** in your home folder, and opens that folder in Finder when it's done. That folder contains:
+
+- the code;
+- a private copy of Python and the packages, set up with [uv](https://docs.astral.sh/uv/);
+- the face model.
+
+Nothing outside that folder is touched.
+
+- **Update:** run the same line again. Your settings are kept.
+- **Uninstall:** delete the folder.
+
+If you'd rather not paste a command, download this repository instead (green **Code** button › **Download ZIP**), unzip it, and run `bash install.sh` inside it.
 
 ## Run
 
 1. Start X-Plane, load a flight and switch to the 3D cockpit view (`Shift+9`).
-2. Open Terminal, then type `bash ` and drag `run.sh` from the downloaded folder into the window. Press Return.
-
-   The first run sets everything up inside that folder, which takes a minute or two. After that it starts straight away.
-
-3. **Allow camera access** when macOS asks, then run it again.
-4. Sit normally, look at the middle of the X-Plane screen and click **Recenter**.
-
-To use your iPhone as the camera, run `bash run.sh --list-cameras` to find its number, then `bash run.sh --camera 1` (using that number).
+2. Double-click **Start Head Tracker** in the X-Plane Head Tracker folder.
+3. **Allow camera access** for Terminal when macOS asks, then start it again.
+4. In the preview window, pick your camera with the **Camera** button: it shows the camera's name, and clicking it switches to the next one (e.g. your iPhone).
+5. Sit normally, look at the middle of the X-Plane screen and click **Recenter**.
 
 ### Controls
 
@@ -46,9 +56,10 @@ To use your iPhone as the camera, run `bash run.sh --list-cameras` to find its n
 
 - **Look range:** how far the view turns when your head is fully turned. Both handles move together; ±90° means a full turn looks straight out the side window.
 - **Smoothness:** from snappy to steady.
-- **Camera:** auto-detects the camera's orientation; click it to force 0/90/180/270°.
+- **Camera:** click to switch to the next camera. The camera is remembered by name, so your iPhone is picked again next time even if the numbering changes.
+- **Rotation:** detects when the camera is turned sideways or upside down; click it to force 0/90/180/270°.
 
-Slider and camera settings are saved to `config.json` in the same folder.
+Everything you set in the window is saved to `config.json` in the same folder.
 
 The global hotkeys need **Input Monitoring** permission for Terminal (System Settings › Privacy & Security › Input Monitoring). Without it, everything else still works.
 
@@ -64,9 +75,9 @@ The global hotkeys need **Input Monitoring** permission for Terminal (System Set
 | Problem | Fix |
 |---|---|
 | "X-Plane: waiting for 127.0.0.1:49000" | Make sure X-Plane is running, and check under X-Plane's Settings › Network that its UDP receive port is 49000. |
-| "Could not open camera" | Allow Terminal under System Settings › Privacy & Security › Camera, or try another `--camera` number. |
+| "Could not open the camera" | Allow Terminal under System Settings › Privacy & Security › Camera, or pick another camera. |
 | An axis moves the wrong way | Set `"invert": true` for that axis in `config.json` (see below). |
-| Laggy or jittery | Improve the lighting, then adjust the Smoothness slider. `bash run.sh --diag diag.csv` records timings you can attach to a bug report. |
+| Laggy or jittery | Improve the lighting, then adjust the Smoothness slider. `./run.sh --diag diag.csv` (in the install folder) records timings you can attach to a bug report. |
 
 ## Configuration
 
@@ -74,7 +85,7 @@ The global hotkeys need **Input Monitoring** permission for Terminal (System Set
 
 | Key | Default | Meaning |
 |---|---|---|
-| `camera_index` | `0` | Which camera (same as `--camera`) |
+| `camera_name` / `camera_index` | – / `0` | Camera, set by the Camera button |
 | `camera_rotation` | `"auto"` | `"auto"` or a fixed rotation: `0`, `90`, `180`, `270` |
 | `smoothing` | `40` | Smoothness slider, 0–100 |
 | `lean_enabled` | `true` | Start with leaning on |
@@ -95,9 +106,11 @@ The tracking runs in a windowless background process, because macOS slows down b
 ## Development
 
 ```bash
-bash run.sh --help                                  # sets up .venv on first run
+git clone https://github.com/ale316/macos-xplane-head-tracking.git && cd macos-xplane-head-tracking
+bash install.sh                                     # .venv, .tools (uv, Python) and the model, all local
 .venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m pytest
+./run.sh --help                                     # --camera, --no-preview, --diag, --list-cameras ...
 ```
 
 The code is in `headtrack/`:

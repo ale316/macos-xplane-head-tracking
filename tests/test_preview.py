@@ -48,20 +48,33 @@ def test_smoothness_slider():
     assert ui.smoothing == 100 and ui.cmd_q[-1] == ("smoothing", 100, False)
 
 
+def press(ui, cmd):
+    (x0, y0, x1, y1), _ = next(b for b in ui.buttons if b[1] == cmd)
+    click(ui, (x0 + x1) / 2, (y0 + y1) / 2)
+
+
 def test_preview_button_switches_off_and_shrinks_window():
     ui = make_ui()
-    (x0, y0, x1, y1), cmd = ui.buttons[0]
-    assert cmd == ("preview",)
-    click(ui, (x0 + x1) / 2, (y0 + y1) / 2)
+    press(ui, ("preview",))
     assert not ui.preview_on and ui.cmd_q[-1] == ("preview", False)
     assert ui.draw(None, None).shape[0] == ui.controls_top() + CTRL_H
 
 
 def test_camera_button_cycles_rotation():
     ui = make_ui()
-    rect, _ = next(b for b in ui.buttons if b[1] == ("rotation",))
     seen = []
     for _ in range(5):
-        click(ui, (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
+        press(ui, ("rotation",))
         seen.append(ui.cmd_q[-1][1])
     assert seen == [0, 90, 180, 270, "auto"]
+
+
+def test_camera_button_asks_for_the_next_camera():
+    ui = make_ui()
+    press(ui, ("camera_next",))
+    assert ui.cmd_q[-1] == ("camera_next",)
+
+
+def test_buttons_fit_the_window():
+    ui = make_ui()
+    assert max(rect[2] for rect, _ in ui.buttons) < 800

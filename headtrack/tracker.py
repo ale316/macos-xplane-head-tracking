@@ -7,7 +7,7 @@ import time
 import numpy as np
 
 from .config import MODEL_PATH
-from .macos import lock_camera_fps, play_sound, set_thread_interactive
+from .macos import camera_names, lock_camera_fps, play_sound, set_thread_interactive
 from .pose import AdaptiveFilter, euler_yxz, head_delta, orthonormalize, smoothing_k
 from .state import Shared, diag
 
@@ -29,9 +29,36 @@ class Tracker(threading.Thread):
         self.rotation_mode = "auto" if mode == "auto" else int(mode) % 360
         self.rotation = 0 if mode == "auto" else self.rotation_mode
         self._new_rotation = None  # set from other threads, applied by the tracker thread
+        self._new_camera = None
         self._probe_hits: dict[int, int] = {}
         self._probe_i, self._probe_next = 0, 0.0
         self._tilted_since = None  # when the tracked face started looking turned on its side
+
+    def request_camera(self, index: int):
+        """Switch to another camera (by OpenCV/AVFoundation number) while running."""
+        self._new_camera = index
+
+    def _open_camera(self, index: int):
+        """Open and frame-rate-lock a camera. Returns (capture, locked device) or None."""
+        import cv2
+
+        cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg["camera_width"])
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg["camera_height"])
+        if not cap.isOpened():
+            cap.release()
+            return None
+        locked_dev, info = None, ""
+        if cap.read()[0]:  # the capture session is running now
+            w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            locked_dev, info = lock_camera_fps(index, w, h, self.cfg["camera_fps"])
+        names = camera_names()
+        name = names[index] if index < len(names) else f"camera {index}"
+        print(f"camera: {name} ({info})", flush=True)
+        with self.shared.lock:
+            self.shared.cam_index, self.shared.cam_name, self.shared.cam_info = index, name, info
+            self.shared.error = None
+        return cap, locked_dev
 
     def set_rotation_mode(self, mode):
         """'auto' or a fixed clockwise rotation (0/90/180/270) for the camera image."""
@@ -113,22 +140,13 @@ class Tracker(threading.Thread):
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
-        cap = cv2.VideoCapture(int(self.cfg["camera_index"]), cv2.CAP_AVFOUNDATION)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg["camera_width"])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg["camera_height"])
-        if not cap.isOpened():
+        opened = self._open_camera(int(self.cfg["camera_index"]))
+        if opened is None:
             with self.shared.lock:
-                self.shared.error = ("Could not open camera. Grant camera access to your terminal app in "
-                                     "System Settings > Privacy & Security > Camera, or try --camera 1.")
+                self.shared.error = ("Could not open the camera. Allow Terminal under System Settings > "
+                                     "Privacy & Security > Camera, or pick another camera.")
             return
-
-        locked_dev, info = None, ""
-        if cap.read()[0]:  # the capture session is running now
-            w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            locked_dev, info = lock_camera_fps(int(self.cfg["camera_index"]), w, h, self.cfg["camera_fps"])
-        print(info, flush=True)
-        with self.shared.lock:
-            self.shared.cam_info = info
+        cap, locked_dev = opened
 
         opts = vision.FaceLandmarkerOptions(
             # CPU only: MediaPipe's Metal (GPU) path fails to detect faces at webcam resolution.
@@ -147,6 +165,20 @@ class Tracker(threading.Thread):
         with vision.FaceLandmarker.create_from_options(opts) as lm, \
                 vision.FaceLandmarker.create_from_options(probe_opts) as probe_lm:
             while not self.shared.quit:
+                if self._new_camera is not None:
+                    index, self._new_camera = self._new_camera, None
+                    if locked_dev is not None:
+                        locked_dev.unlockForConfiguration()
+                    cap.release()
+                    opened = self._open_camera(index) or self._open_camera(self.shared.cam_index)
+                    if opened is None:
+                        with self.shared.lock:
+                            self.shared.error = "Could not open the camera."
+                        return
+                    cap, locked_dev = opened
+                    self.filter.reset()
+                    self.prev = None
+                    self.request_recenter()  # a different camera means a new neutral pose
                 ok, raw_frame = cap.read()
                 if not ok:
                     time.sleep(0.01)

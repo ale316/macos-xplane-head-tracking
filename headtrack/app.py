@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 
 from .config import CONFIG_PATH, MODEL_PATH, load_config, save_settings, set_look_range
-from .macos import disable_app_nap, list_cameras, play_sound, set_thread_interactive, start_global_hotkeys
+from .macos import (camera_names, disable_app_nap, list_cameras, pick_camera, play_sound, set_thread_interactive,
+                    start_global_hotkeys)
 from .preview import preview_process, snapshot, status_lines
 from .state import Shared, close_diag, diag, enable_diag
 from .tracker import Tracker
@@ -45,7 +46,7 @@ def run_engine(sh: Shared, cfg: dict, status_q, preview):
 def main() -> int:
     ap = argparse.ArgumentParser(prog="run.sh", description="Webcam head tracking for X-Plane 12 (macOS)")
     ap.add_argument("--config", type=Path, default=CONFIG_PATH, help="settings file (default: config.json here)")
-    ap.add_argument("--camera", type=int, help="camera index (see --list-cameras)")
+    ap.add_argument("--camera", type=int, help="camera number for this run (see --list-cameras)")
     ap.add_argument("--host", help="X-Plane host (default 127.0.0.1)")
     ap.add_argument("--port", type=int, help="X-Plane UDP port (default 49000)")
     ap.add_argument("--no-preview", action="store_true", help="run without the camera window")
@@ -59,7 +60,9 @@ def main() -> int:
 
     cfg = load_config(args.config)
     if args.camera is not None:
-        cfg["camera_index"] = args.camera
+        cfg["camera_index"], cfg["camera_name"] = args.camera, ""
+    else:
+        cfg["camera_index"] = pick_camera(cfg, camera_names())
     if args.host:
         cfg["xplane_host"] = args.host
     if args.port:
@@ -111,7 +114,18 @@ def main() -> int:
         save_settings(args.config, cfg)
         print(f"camera rotation: {mode} (saved)", flush=True)
 
-    actions = {"recenter": tracker.request_recenter, "pause": toggle_pause, "lean": toggle_lean}
+    def next_camera():
+        names = camera_names()
+        if len(names) < 2:
+            print("only one camera found", flush=True)
+            return
+        index = (sh.cam_index + 1) % len(names)
+        tracker.request_camera(index)
+        cfg["camera_index"], cfg["camera_name"] = index, names[index]
+        save_settings(args.config, cfg)
+
+    actions = {"recenter": tracker.request_recenter, "pause": toggle_pause, "lean": toggle_lean,
+               "camera_next": next_camera}
     set_thread_interactive()
     if not disable_app_nap():
         print("warning: couldn't disable App Nap")

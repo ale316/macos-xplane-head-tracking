@@ -15,6 +15,7 @@ AXES = ("yaw", "pitch", "roll", "x", "y", "z")
 
 DEFAULT_CONFIG = {
     "camera_index": 0,
+    "camera_name": "",  # preferred camera; found by name when connected, else camera_index
     "camera_width": 640,
     "camera_height": 480,
     "xplane_host": "127.0.0.1",
@@ -91,6 +92,7 @@ def save_settings(path: Path, cfg: dict):
     """Write the slider settings into the config file, leaving everything else as is."""
     data = json.loads(path.read_text()) if path.exists() else {}
     data["smoothing"] = cfg["smoothing"]
+    data["camera_index"], data["camera_name"] = cfg["camera_index"], cfg["camera_name"]
     data["camera_rotation"] = cfg["camera_rotation"]
     data.pop("smoothing_level", None)
     for axis in ("yaw", "pitch"):
