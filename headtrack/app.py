@@ -11,13 +11,115 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .config import CONFIG_PATH, MODEL_PATH, ConfigError, load_config, save_settings, set_look_range
 from .camera import camera_to_use, list_cameras, pick_camera
+from .config import CONFIG_PATH, MODEL_PATH, ConfigError, load_config, save_settings, set_look_range
 from .macos import disable_app_nap, play_sound, set_thread_interactive, start_global_hotkeys
 from .preview import preview_process, snapshot, status_lines
 from .state import Shared, close_diag, diag, enable_diag
 from .tracker import Tracker
 from .xplane import XPlaneLink
+
+
+class Controls:
+    """Carries out commands from the preview window and the global hotkeys, and saves the
+    settings they change."""
+
+    def __init__(self, cfg: dict, sh: Shared, tracker: Tracker, config_path: Path):
+        self.cfg, self.sh, self.tracker, self.config_path = cfg, sh, tracker, config_path
+        self.hotkey_actions = {"recenter": tracker.request_recenter, "pause": self.toggle_pause,
+                               "lean": self.toggle_lean}
+
+    def handle(self, cmd: str, *args):
+        """One command from the preview, e.g. ("range", 90, True)."""
+        handler = {
+            **self.hotkey_actions,
+            "quit": self.quit,
+            "range": self.set_range,  # (degrees, save)
+            "smoothing": self.set_smoothing,  # (0-100, save)
+            "camera": self.select_camera,  # (index in the camera list,)
+            "cameras": self.refresh_cameras,
+            "rotation": self.set_rotation,  # ("auto" or 0/90/180/270,)
+            "preview": self.set_preview,  # (on,)
+            "visible": self.set_preview_visible,  # (on screen,)
+            "perf": lambda *perf: diag("preview", *perf),
+        }.get(cmd)
+        if handler is not None:
+            handler(*args)
+
+    def serve(self, cmd_q):
+        """Handle the preview's commands until it asks to quit."""
+        while not self.sh.quit:
+            self.handle(*cmd_q.get())
+
+    def quit(self):
+        with self.sh.lock:
+            self.sh.quit = True
+
+    def toggle_pause(self):
+        with self.sh.lock:
+            self.sh.paused = paused = not self.sh.paused
+        play_sound(self.cfg, "Bottle" if paused else "Pop")
+        print("paused" if paused else "resumed", flush=True)
+
+    def toggle_lean(self):
+        with self.sh.lock:
+            self.sh.lean = lean = not self.sh.lean
+        play_sound(self.cfg, "Glass" if lean else "Submarine")
+        print("leaning on" if lean else "leaning off", flush=True)
+
+    def set_range(self, degrees: float, save: bool):
+        set_look_range(self.cfg, degrees)
+        if save:  # on release, not on every step of a drag
+            save_settings(self.config_path, self.cfg)
+            axes = self.cfg["axes"]
+            print(f"look range +/-{axes['yaw']['output_max']:.0f} deg left/right, "
+                  f"+/-{axes['pitch']['output_max']:.0f} up/down (saved)", flush=True)
+
+    def set_smoothing(self, pct: float, save: bool):
+        with self.sh.lock:
+            self.sh.smoothing = self.cfg["smoothing"] = float(pct)
+        if save:
+            save_settings(self.config_path, self.cfg)
+            print(f"smoothness {pct:.0f}% (saved)", flush=True)
+
+    def set_rotation(self, mode):
+        self.tracker.set_rotation_mode(mode)
+        self.cfg["camera_rotation"] = mode
+        save_settings(self.config_path, self.cfg)
+        print(f"camera rotation: {mode} (saved)", flush=True)
+
+    def set_preview(self, on: bool):
+        self.sh.preview_on = on
+
+    def set_preview_visible(self, visible: bool):
+        self.sh.preview_visible = visible
+        diag("visible", float(visible))
+
+    def select_camera(self, index: int):
+        cameras = self.sh.cam_list
+        if index >= len(cameras) or cameras[index].id == self.sh.cam_id:
+            return
+        self.tracker.request_camera(cameras[index])
+        self.cfg["camera_id"], self.cfg["camera_name"] = cameras[index].id, cameras[index].name
+        save_settings(self.config_path, self.cfg)
+
+    def refresh_cameras(self):
+        cameras = list_cameras()
+        with self.sh.lock:
+            self.sh.cam_list = cameras
+
+    def watch_cameras(self):
+        """Follow cameras coming and going: switch to the chosen one when it shows up (an iPhone
+        connecting late), or to another one if the camera in use disappears."""
+        while not self.sh.quit:
+            time.sleep(3)
+            cameras = list_cameras()
+            with self.sh.lock:
+                self.sh.cam_list, current = cameras, self.sh.cam_id
+            switch = camera_to_use(self.cfg, cameras, current)
+            if switch is not None and switch != self.tracker.camera:  # not the one it's still opening
+                print(f"camera: switching to {switch.name}", flush=True)
+                self.tracker.request_camera(switch)
 
 
 def run_engine(sh: Shared, cfg: dict, status_q, preview):
@@ -43,7 +145,7 @@ def run_engine(sh: Shared, cfg: dict, status_q, preview):
             with sh.lock:
                 lines = status_lines(sh, cfg)
                 raw = sh.raw.copy()
-            print(" | ".join(lines), "| yaw/pitch/roll %+5.1f %+5.1f %+5.1f" % tuple(raw[:3]), flush=True)
+            print(" | ".join(lines), f"| yaw/pitch/roll {raw[0]:+5.1f} {raw[1]:+5.1f} {raw[2]:+5.1f}", flush=True)
 
 
 def main() -> int:
@@ -53,7 +155,7 @@ def main() -> int:
     ap.add_argument("--host", help="X-Plane host (default 127.0.0.1)")
     ap.add_argument("--port", type=int, help="X-Plane UDP port (default 49000)")
     ap.add_argument("--no-preview", action="store_true", help="run without the camera window")
-    ap.add_argument("--diag", type=Path, help="log frame / send / focus timing to this CSV (for debugging lag)")
+    ap.add_argument("--diag", type=Path, help="log tracking and preview timing to this CSV (for debugging)")
     ap.add_argument("--list-cameras", action="store_true", help="list cameras and their numbers")
     ap.add_argument("--version", action="version", version=f"X-Plane Head Tracker {__version__}")
     args = ap.parse_args()
@@ -93,102 +195,16 @@ def main() -> int:
     sh.smoothing = float(cfg["smoothing"])
     tracker = Tracker(cfg, sh, camera)
     link = XPlaneLink(cfg, sh)
+    controls = Controls(cfg, sh, tracker, args.config)
     if args.diag:
         enable_diag(args.diag)
-        print(f"writing timing diagnostics to {args.diag}", flush=True)
+        print(f"writing diagnostics to {args.diag}", flush=True)
 
-    def toggle_pause():
-        with sh.lock:
-            sh.paused = not sh.paused
-            paused = sh.paused
-        play_sound(cfg, "Bottle" if paused else "Pop")
-        print("paused" if paused else "resumed", flush=True)
-
-    def toggle_lean():
-        with sh.lock:
-            sh.lean = not sh.lean
-            lean = sh.lean
-        play_sound(cfg, "Glass" if lean else "Submarine")
-        print("leaning on" if lean else "leaning off", flush=True)
-
-    def set_range(deg: float, save: bool):
-        set_look_range(cfg, deg)
-        if save:
-            save_settings(args.config, cfg)
-            print(f"look range +/-{cfg['axes']['yaw']['output_max']:.0f} deg left/right, "
-                  f"+/-{cfg['axes']['pitch']['output_max']:.0f} up/down (saved)", flush=True)
-
-    def set_smoothing(pct: float, save: bool):
-        with sh.lock:
-            sh.smoothing = cfg["smoothing"] = float(pct)
-        if save:
-            save_settings(args.config, cfg)
-            print(f"smoothness {pct:.0f}% (saved)", flush=True)
-
-    def set_rotation(mode):
-        tracker.set_rotation_mode(mode)
-        cfg["camera_rotation"] = mode
-        save_settings(args.config, cfg)
-        print(f"camera rotation: {mode} (saved)", flush=True)
-
-    def refresh_cameras():
-        cameras = list_cameras()
-        with sh.lock:
-            sh.cam_list = cameras
-
-    def watch_cameras():
-        """Follow cameras coming and going: switch to the chosen one when it shows up (an iPhone
-        connecting late), or to another one if the camera in use disappears."""
-        while not sh.quit:
-            time.sleep(3)
-            cameras = list_cameras()
-            with sh.lock:
-                sh.cam_list, current = cameras, sh.cam_id
-            switch = camera_to_use(cfg, cameras, current)
-            if switch is not None:
-                print(f"camera: switching to {switch.name}", flush=True)
-                tracker.request_camera(switch)
-
-    def select_camera(index: int):
-        cameras = sh.cam_list
-        if index >= len(cameras) or cameras[index].id == sh.cam_id:
-            return
-        tracker.request_camera(cameras[index])
-        cfg["camera_id"], cfg["camera_name"] = cameras[index].id, cameras[index].name
-        save_settings(args.config, cfg)
-
-    actions = {"recenter": tracker.request_recenter, "pause": toggle_pause, "lean": toggle_lean,
-               "cameras": refresh_cameras}
     set_thread_interactive()
     if not disable_app_nap():
         print("warning: couldn't disable App Nap")
-    hotkey_status = start_global_hotkeys(cfg["hotkeys"], actions)
+    hotkey_status = start_global_hotkeys(cfg["hotkeys"], controls.hotkey_actions)
     print(hotkey_status, flush=True)
-
-    def handle_commands(cmd_q):
-        while True:
-            cmd, *arg = cmd_q.get()
-            if cmd == "quit":
-                with sh.lock:
-                    sh.quit = True
-                return
-            if cmd == "visible":
-                sh.preview_visible = arg[0]
-                diag("visible", float(arg[0]))
-            elif cmd == "perf":
-                diag("preview", *arg)
-            elif cmd == "range":
-                set_range(*arg)
-            elif cmd == "smoothing":
-                set_smoothing(*arg)
-            elif cmd == "preview":
-                sh.preview_on = arg[0]
-            elif cmd == "camera":
-                select_camera(arg[0])
-            elif cmd == "rotation":
-                set_rotation(arg[0])
-            elif cmd in actions:
-                actions[cmd]()
 
     preview, status_q = None, None
     if not args.no_preview:
@@ -197,18 +213,17 @@ def main() -> int:
         preview = ctx.Process(target=preview_process, name="preview", daemon=True,
                               args=(cfg, status_q, cmd_q, "" if "OFF" not in hotkey_status else "(global hotkeys off)"))
         preview.start()
-        threading.Thread(target=handle_commands, args=(cmd_q,), daemon=True, name="commands").start()
+        threading.Thread(target=controls.serve, args=(cmd_q,), daemon=True, name="commands").start()
 
     tracker.start()
     link.start()
-    threading.Thread(target=watch_cameras, daemon=True, name="cameras").start()
+    threading.Thread(target=controls.watch_cameras, daemon=True, name="cameras").start()
     try:
         run_engine(sh, cfg, status_q, preview)
     except KeyboardInterrupt:
         pass
     finally:
-        with sh.lock:
-            sh.quit = True
+        controls.quit()
         if preview is not None and preview.is_alive():
             try:
                 status_q.put(None, timeout=0.5)  # ask the preview to close

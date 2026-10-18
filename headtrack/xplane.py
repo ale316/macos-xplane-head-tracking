@@ -21,7 +21,6 @@ from .macos import set_thread_interactive
 from .pose import fill_gap, map_pose, smoothing_ease, smoothing_fill
 from .state import Shared, diag
 
-
 DATAREFS = {
     "yaw": "sim/graphics/view/pilots_head_psi",
     "pitch": "sim/graphics/view/pilots_head_the",
@@ -66,7 +65,7 @@ class EyePoint:
     """The current aircraft's seat position, from the .acf file X-Plane's log says it loaded.
 
     X-Plane keeps the eye point and the live head position in the same variable, so the
-    tracker's own writes move it; it can't be read back as a reference. The file can't be.
+    tracker's own writes move it and it can't be read back as a reference. The file stays put.
     """
 
     def __init__(self, folder: Path | None):
@@ -170,6 +169,39 @@ class XPlaneLink(threading.Thread):
                 if 0 <= idx < len(self.names):
                     self.values[idx] = (val, now)
 
+    def _follow_aircraft(self, now: float, connected: bool):
+        """Keep the base on the current aircraft's seat; a new flight takes a new base."""
+        if now >= self.next_eye_check:
+            self.next_eye_check = now + 1.0
+            if self.eye.folder is None and self.local and connected:
+                self.eye.folder = xplane_folder()  # X-Plane was started after the tracker
+            self.eye.refresh()
+        flight = self.values.get(len(AXES) + 2)
+        if flight is not None:
+            if self.flight_time is not None and flight[0] < self.flight_time - 1.0:
+                self.base = self.prev_out = None  # a new flight: take the new seat position
+            self.flight_time = flight[0]
+        if self.base is not None and self.eye.point is not None:
+            self.base[3:] = self.eye.point
+
+    def _capture_base(self):
+        """Take the base from X-Plane's own head pose, once our writes have stopped echoing back:
+        straight ahead and level at X-Plane's default view pitch, in the seat."""
+        head = [self.values.get(i) for i in range(len(AXES))]
+        if not all(h and h[1] > self.last_sent + self.SETTLE_S for h in head):
+            return
+        captured = np.array([h[0] for h in head])
+        # If X-Plane is still showing our last written pose (e.g. after a view switch
+        # round-trip), keep the old base instead of baking in the offset.
+        if self.prev_out is not None and np.allclose(captured, self.prev_out, atol=1e-3):
+            self.base = self.prev_base
+        else:
+            pitch = captured[1] if abs(captured[1]) <= MAX_BASE_PITCH else 0.0
+            self.base = np.array([0.0, pitch, 0.0, *captured[3:]])
+        if self.eye.point is not None:
+            self.base[3:] = self.eye.point  # the seat position from the aircraft file
+        self.smoothed = np.zeros(6)
+
     def run(self):
         cfg, sh = self.cfg, self.shared
         set_thread_interactive()
@@ -204,36 +236,11 @@ class XPlaneLink(threading.Thread):
             in_cockpit = (not cfg["only_in_cockpit_view"]) or view_type in (None, VIEW_3D_COCKPIT)
             want_active = connected and in_cockpit and not paused and has_ref and not quitting
 
-            if now >= self.next_eye_check:
-                self.next_eye_check = now + 1.0
-                if self.eye.folder is None and self.local and now - self.last_rx < 2.0:
-                    self.eye.folder = xplane_folder()  # X-Plane was started after the tracker
-                self.eye.refresh()
-            flight = self.values.get(len(AXES) + 2)
-            if flight is not None:
-                if self.flight_time is not None and flight[0] < self.flight_time - 1.0:
-                    self.base = self.prev_out = None  # a new flight: take the new seat position
-                self.flight_time = flight[0]
-
+            self._follow_aircraft(now, connected)
             if want_active and self.base is None:
-                # X-Plane's own head pose, once our writes have stopped echoing back.
-                head = [self.values.get(i) for i in range(len(AXES))]
-                if all(h and h[1] > self.last_sent + self.SETTLE_S for h in head):
-                    captured = np.array([h[0] for h in head])
-                    # If X-Plane is still showing our last written pose (e.g. after a view
-                    # switch round-trip), keep the old base instead of baking in the offset.
-                    stale = self.prev_out is not None and np.allclose(captured, self.prev_out, atol=1e-3)
-                    if stale:
-                        self.base = self.prev_base
-                    else:  # straight ahead and level, at X-Plane's default view pitch
-                        pitch = captured[1] if abs(captured[1]) <= MAX_BASE_PITCH else 0.0
-                        self.base = np.array([0.0, pitch, 0.0, *captured[3:]])
-                    self.smoothed = np.zeros(6)
-            if self.base is not None and self.eye.point is not None:
-                self.base[3:] = self.eye.point  # the seat position from the aircraft file
+                self._capture_base()
             active = want_active and self.base is not None
 
-            out = None
             if active:
                 slow = (not face_ok) or (now - reacquired < 0.5)
                 tau = cfg["face_lost_smoothing_s"] if slow else smoothing_ease(cfg["output_smoothing_s"], smoothing)

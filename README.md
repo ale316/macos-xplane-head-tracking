@@ -43,11 +43,9 @@ While flying, the hotkeys `Ctrl+Shift+C` (recenter), `Ctrl+Shift+P` (pause) and 
 - **X-Plane not connecting?** Make sure its UDP receive port is 49000 (Settings › Network).
 - **Something wrong?** Run `./run.sh --diag diag.csv` in the install folder, reproduce it, and attach `diag.csv` to an [issue](https://github.com/ale316/macos-xplane-head-tracking/issues).
 
-## Development
+## Contributing
 
-```bash
-bash install.sh && .venv/bin/python -m pip install -r requirements-dev.txt && .venv/bin/python -m pytest
-```
+Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) explains how the code fits together.
 
 ## License
 

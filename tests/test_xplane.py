@@ -11,8 +11,16 @@ import pytest
 from headtrack import xplane
 from headtrack.config import AXES, DEFAULT_CONFIG
 from headtrack.state import Shared
-from headtrack.xplane import (DATAREFS, FLIGHT_TIME_DREF, FOV_DREF, VIEW_3D_COCKPIT, VIEW_TYPE_DREF, XPlaneLink,
-                              acf_eye_point)
+from headtrack.xplane import (
+    DATAREFS,
+    FLIGHT_TIME_DREF,
+    FOV_DREF,
+    VIEW_3D_COCKPIT,
+    VIEW_TYPE_DREF,
+    EyePoint,
+    XPlaneLink,
+    acf_eye_point,
+)
 
 AQUILA_ACF = """P acf/_cgX_lft -0.010000000
 P acf/_cgX_rgt 0.010000000
@@ -28,6 +36,27 @@ AQUILA_EYE = (-0.219, 0.622, 0.469)  # what X-Plane itself reports for this airc
 def test_acf_eye_point_matches_xplane():
     assert acf_eye_point(AQUILA_ACF) == pytest.approx(AQUILA_EYE, abs=0.001)
     assert acf_eye_point("P acf/_cgY 1") is None
+
+
+def xplane_folder(tmp_path, acf_text):
+    """A fake X-Plane folder whose log says the Aquila was loaded."""
+    (tmp_path / "Aircraft").mkdir(exist_ok=True)
+    (tmp_path / "Aircraft" / "Aquila.acf").write_text(acf_text)
+    (tmp_path / "Log.txt").write_text("0:00:19.111 I/ACF: Loading airplane number 0 with Aircraft/Aquila.acf\n")
+    return tmp_path
+
+
+def test_seat_follows_the_log_across_aircraft_and_restarts(tmp_path):
+    folder = xplane_folder(tmp_path, AQUILA_ACF)
+    eye = EyePoint(folder)
+    assert eye.refresh() == pytest.approx(AQUILA_EYE, abs=0.001)
+    (folder / "Aircraft" / "Other.acf").write_text(AQUILA_ACF.replace("_pe_xyz/0 -0.72", "_pe_xyz/0 1.28"))
+    with open(folder / "Log.txt", "a") as log:
+        log.write("0:10:00.000 I/ACF: Loading airplane number 0 with Aircraft/Other.acf\n")
+    assert eye.refresh()[0] == pytest.approx(AQUILA_EYE[0] + 2 * 0.3048, abs=0.001)
+    (folder / "Log.txt").write_text("Loading airplane number 0 with Aircraft/Aquila.acf\n")  # X-Plane restarted
+    assert eye.refresh() == pytest.approx(AQUILA_EYE, abs=0.001)
+    assert EyePoint(None).refresh() is None  # X-Plane on another computer
 
 
 class FakeXPlane:
@@ -61,7 +90,7 @@ class FakeXPlane:
                     name = name.split(b"\x00")[0].decode()
                     self.values[name] = val
                     self.writes.append((name, val))
-            except socket.timeout:
+            except TimeoutError:
                 pass
             if time.monotonic() - last > 0.05:
                 last = time.monotonic()
@@ -72,14 +101,6 @@ class FakeXPlane:
 
     def __getitem__(self, axis):
         return self.values[DATAREFS[axis]]
-
-
-def xplane_folder(tmp_path, acf_text):
-    """A fake X-Plane folder whose log says the Aquila was loaded."""
-    (tmp_path / "Aircraft").mkdir(exist_ok=True)
-    (tmp_path / "Aircraft" / "Aquila.acf").write_text(acf_text)
-    (tmp_path / "Log.txt").write_text("0:00:19.111 I/ACF: Loading airplane number 0 with Aircraft/Aquila.acf\n")
-    return tmp_path
 
 
 def start(monkeypatch, folder, raw=(30.0, 10.0, 0.0, 0.0, 0.0, 10.0)):

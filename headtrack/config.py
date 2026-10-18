@@ -14,6 +14,11 @@ CONFIG_PATH = ROOT / "config.json"
 AXES = ("yaw", "pitch", "roll", "x", "y", "z")
 
 
+def axis(deadzone: float, input_max: float, output_max: float, exponent: float = 1.0) -> dict:
+    return {"enabled": True, "invert": False, "deadzone": deadzone, "input_max": input_max,
+            "output_max": output_max, "exponent": exponent}
+
+
 DEFAULT_CONFIG = {
     "camera_id": "",  # chosen in the preview; found again by ID, or by name
     "camera_name": "",
@@ -54,15 +59,15 @@ DEFAULT_CONFIG = {
     "translation_pivot_cm": [0.0, -5.0, -5.0],
     "sounds": True,
     "hotkeys": {"recenter": "ctrl+shift+c", "pause": "ctrl+shift+p", "lean": "ctrl+shift+l"},
-    # input_* in degrees (rotation) or cm (translation) of real head movement;
-    # output_max in degrees or meters of in-sim view movement.
+    # Response per axis (see pose.apply_curve): deadzone and input_max in degrees (rotation) or
+    # cm (translation) of real head movement; output_max in degrees or meters of view movement.
     "axes": {
-        "yaw": {"enabled": True, "invert": False, "deadzone": 1.0, "input_max": 35.0, "output_max": 150.0, "exponent": 1.4},
-        "pitch": {"enabled": True, "invert": False, "deadzone": 1.0, "input_max": 25.0, "output_max": 60.0, "exponent": 1.3},
-        "roll": {"enabled": True, "invert": False, "deadzone": 2.0, "input_max": 30.0, "output_max": 20.0, "exponent": 1.0},
-        "x": {"enabled": True, "invert": False, "deadzone": 0.5, "input_max": 12.0, "output_max": 0.20, "exponent": 1.0},
-        "y": {"enabled": True, "invert": False, "deadzone": 0.5, "input_max": 8.0, "output_max": 0.10, "exponent": 1.0},
-        "z": {"enabled": True, "invert": False, "deadzone": 0.5, "input_max": 12.0, "output_max": 0.25, "exponent": 1.0},
+        "yaw": axis(deadzone=1.0, input_max=35.0, output_max=150.0, exponent=1.4),
+        "pitch": axis(deadzone=1.0, input_max=25.0, output_max=60.0, exponent=1.3),
+        "roll": axis(deadzone=2.0, input_max=30.0, output_max=20.0),
+        "x": axis(deadzone=0.5, input_max=12.0, output_max=0.20),
+        "y": axis(deadzone=0.5, input_max=8.0, output_max=0.10),
+        "z": axis(deadzone=0.5, input_max=12.0, output_max=0.25),
     },
 }
 

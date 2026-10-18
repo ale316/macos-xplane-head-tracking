@@ -2,8 +2,20 @@ import numpy as np
 import pytest
 
 from headtrack.config import DEFAULT_CONFIG
-from headtrack.pose import (AdaptiveFilter, apply_curve, euler_yxz, fill_gap, head_delta, map_pose, rot_x, rot_y,
-                            rot_z, smoothing_ease, smoothing_fill, smoothing_k)
+from headtrack.pose import (
+    AdaptiveFilter,
+    apply_curve,
+    euler_yxz,
+    fill_gap,
+    head_delta,
+    map_pose,
+    rot_x,
+    rot_y,
+    rot_z,
+    smoothing_ease,
+    smoothing_fill,
+    smoothing_k,
+)
 
 
 def test_euler_round_trip():

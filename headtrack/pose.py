@@ -59,6 +59,8 @@ def head_delta(R_ref: np.ndarray, p_ref: np.ndarray, R: np.ndarray, p: np.ndarra
 
 
 def apply_curve(v: float, ax: dict) -> float:
+    """Head movement -> view movement for one axis: nothing inside the deadzone, then rising
+    along a power curve to output_max at input_max (and capped there)."""
     if not ax["enabled"]:
         return 0.0
     a = abs(v) - ax["deadzone"]

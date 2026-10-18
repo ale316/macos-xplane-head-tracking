@@ -1,8 +1,10 @@
 import copy
 import json
 
-from headtrack.config import DEFAULT_CONFIG, load_config, save_settings, set_look_range
+import pytest
+
 from headtrack.camera import CameraInfo, camera_to_use, pick_camera
+from headtrack.config import DEFAULT_CONFIG, ConfigError, load_config, save_settings, set_look_range
 
 
 def test_look_range_limits_and_pitch_follows():
@@ -15,6 +17,13 @@ def test_look_range_limits_and_pitch_follows():
 
 def test_missing_config_gives_defaults(tmp_path):
     assert load_config(tmp_path / "nope.json") == DEFAULT_CONFIG
+
+
+def test_broken_config_says_where(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text('{"smoothing": 40,\n}')
+    with pytest.raises(ConfigError, match="line 2"):
+        load_config(path)
 
 
 def test_old_smoothing_level_converts(tmp_path):

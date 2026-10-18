@@ -165,6 +165,7 @@ class Camera:
         best = max(device.formats(), key=score)
         self.fps = int(min(max_fps, max(r.maxFrameRate() for r in best.videoSupportedFrameRateRanges())))
         self._device = device if device.lockForConfiguration_(None)[0] else None
+        self.locked = self._device is not None  # we hold the format and frame rate
         self._format = best
         try:
             self._start(session, best, width)
@@ -175,14 +176,18 @@ class Camera:
         active = CM.CMVideoFormatDescriptionGetDimensions(device.activeFormat().formatDescription())
         frame = device.activeVideoMinFrameDuration()
         self.mode = (f"{active.width}x{active.height} at {frame.timescale / max(frame.value, 1):.0f} fps"
-                     + ("" if self._device is not None else " (couldn't lock the camera's settings)"))
+                     + ("" if self.locked else " (couldn't lock the camera's settings)"))
 
     def _start(self, session, best, width: int):
         import AVFoundation as AV
         import CoreMedia as CM
         from libdispatch import dispatch_queue_create
-        from Quartz import kCVPixelBufferHeightKey, kCVPixelBufferPixelFormatTypeKey, kCVPixelBufferWidthKey
-        from Quartz import kCVPixelFormatType_32BGRA
+        from Quartz import (
+            kCVPixelBufferHeightKey,
+            kCVPixelBufferPixelFormatTypeKey,
+            kCVPixelBufferWidthKey,
+            kCVPixelFormatType_32BGRA,
+        )
 
         self._apply_format()  # with the device in the session, this also stops presets overriding the format
 

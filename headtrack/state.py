@@ -54,7 +54,7 @@ class Shared:
         self.raw_vel = np.zeros(6)  # velocity of `raw` between the last two frames
         self.raw_time = 0.0  # when `raw` became available
         self.cam_fps = 0.0
-        self.cam_info = ""
+        self.cam_locked = False  # the camera's frame rate is pinned
         self.cam_target_fps = 0
         self.cam_id = ""
         self.cam_name = ""

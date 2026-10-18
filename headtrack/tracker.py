@@ -5,18 +5,36 @@ import threading
 import time
 from collections import deque
 
+import cv2
 import numpy as np
 
-from .config import HAND_MODEL_PATH, MODEL_PATH
 from .camera import Camera, CameraInfo, camera_access
+from .config import HAND_MODEL_PATH, MODEL_PATH
 from .macos import play_sound, set_thread_interactive
 from .pose import AdaptiveFilter, euler_yxz, head_delta, orthonormalize, smoothing_k
 from .state import Shared, diag
 
-ROTATE_CODES = {90: 0, 180: 1, 270: 2}  # cv2.ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
+ROTATE = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
 # While a hand is at the face ("follow" mode): filter this much stiffer, and limit the speed.
 HAND_FILTER_FACTOR = 4.0
 HAND_MAX_SPEED = np.array([60.0, 60.0, 60.0, 10.0, 10.0, 10.0])  # deg/s, cm/s
+
+
+def rotate(frame, degrees: int):
+    """The frame turned clockwise by 0/90/180/270 degrees."""
+    return cv2.rotate(frame, ROTATE[degrees]) if degrees else frame
+
+
+def mp_image(frame):
+    """A MediaPipe image from an OpenCV (BGR) frame."""
+    import mediapipe as mp  # imported when needed: it takes a while
+    return mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+
+
+def box(landmarks) -> tuple[float, float, float, float]:
+    """Bounding box (x0, y0, x1, y1) of MediaPipe landmarks, in normalized image coordinates."""
+    pts = np.array([[p.x, p.y] for p in landmarks])
+    return (*pts.min(0), *pts.max(0))
 
 
 def hand_over_face(hand_boxes: list, face_box, margin: float = 0.15) -> bool:
@@ -71,8 +89,6 @@ class HandWatcher(threading.Thread):
             self.last_hit = t
 
     def run(self):
-        import cv2
-        import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
         set_thread_interactive()
@@ -89,17 +105,16 @@ class HandWatcher(threading.Thread):
                     (frame, t, face_box), self._job = self._job, None
                 start = time.monotonic()
                 last_ts = ts = max(int(t * 1000), last_ts + 1)
-                res = lm.detect_for_video(
-                    mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), ts)
-                boxes = []
-                for hand in res.hand_landmarks:
-                    pts = np.array([[p.x, p.y] for p in hand])
-                    boxes.append((*pts.min(0), *pts.max(0)))
-                self.check(boxes, face_box, t)
+                res = lm.detect_for_video(mp_image(frame), ts)
+                self.check([box(hand) for hand in res.hand_landmarks], face_box, t)
                 time.sleep(max(0.0, self.period - (time.monotonic() - start)))
 
 
 class Tracker(threading.Thread):
+    """Reads the camera and turns each frame into a filtered head pose relative to the neutral
+    (recentered) pose, published in `shared.raw`. Also handles camera switching and rotation,
+    and steadies the pose while a hand is at the face."""
+
     def __init__(self, cfg: dict, shared: Shared, camera: CameraInfo | None = None):
         super().__init__(daemon=True, name="tracker")
         self.cfg, self.shared, self.camera = cfg, shared, camera
@@ -140,7 +155,7 @@ class Tracker(threading.Thread):
         print(f"camera: {cam.name}, {cam.mode}", flush=True)
         with self.shared.lock:
             self.shared.cam_id, self.shared.cam_name = camera.id, cam.name
-            self.shared.cam_info = f"locked at {cam.fps} fps"
+            self.shared.cam_locked = cam.locked
             self.shared.cam_target_fps = cam.fps
             self.shared.error = None
         return cam
@@ -168,7 +183,7 @@ class Tracker(threading.Thread):
         if mode != "auto":
             self._new_rotation = mode
 
-    def _probe_rotation(self, raw_frame, now: float, probe_lm, mp, cv2) -> int | None:
+    def _probe_rotation(self, raw_frame, now: float, probe) -> int | None:
         """While the face is lost, try the other camera orientations one at a time (~10 per second)
         with a separate image-mode model, so the main video tracker's state isn't disturbed.
         A roughly upright face found twice in the same orientation means the camera was turned."""
@@ -178,8 +193,7 @@ class Tracker(threading.Thread):
         candidates = [r for r in (0, 90, 270, 180) if r != self.rotation]
         r = candidates[self._probe_i % len(candidates)]
         self._probe_i += 1
-        img = raw_frame if r == 0 else cv2.rotate(raw_frame, ROTATE_CODES[r])
-        res = probe_lm.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(img, cv2.COLOR_BGR2RGB)))
+        res = probe(rotate(raw_frame, r))
         if not res.facial_transformation_matrixes or abs(self._image_roll(res)) > 45:
             self._probe_hits[r] = 0  # no face, or one still lying on its side in this orientation
             return None
@@ -192,9 +206,10 @@ class Tracker(threading.Thread):
         M = np.asarray(res.facial_transformation_matrixes[0], dtype=float).reshape(4, 4)
         return euler_yxz(orthonormalize(M[:3, :3]))[2]
 
-    def _check_orientation(self, res, raw_frame, now: float, probe_lm, mp, cv2):
+    def _check_orientation(self, res, raw_frame, now: float, probe):
         """Auto camera rotation. A face lying on its side for a second means the camera was turned
-        while tracking continued; a lost face may mean it was turned and tracking dropped."""
+        while tracking continued; a lost face may mean it was turned and tracking dropped.
+        `probe(image)` runs face detection on a single image."""
         if res.facial_transformation_matrixes:
             roll = self._image_roll(res)
             if abs(roll) < 60:
@@ -209,7 +224,7 @@ class Tracker(threading.Thread):
         with self.shared.lock:
             lost_for = now - self.shared.face_time
         if lost_for > 0.5:
-            r = self._probe_rotation(raw_frame, now, probe_lm, mp, cv2)
+            r = self._probe_rotation(raw_frame, now, probe)
             if r is not None:
                 self._apply_rotation(r)
 
@@ -230,6 +245,27 @@ class Tracker(threading.Thread):
             return before[-1].copy()
         return self._history[0][1].copy() if self._history else np.zeros(6)
 
+    def _hand_pose(self, d: np.ndarray, now: float) -> np.ndarray:
+        """The pose while a hand is at the face, given the measured (unreliable) pose d.
+        "hold" keeps the pose from just before the hand arrived. "follow" keeps following with a
+        much stiffer filter and a speed limit: they smooth out the jumps a hand causes, while
+        slower head movement still comes through."""
+        mode = self.cfg["hand_at_face"]
+        if self._held is None:  # a hand just arrived
+            if mode == "hold":  # rewind past the hand's first effects
+                self._held = self._pose_before(self.hands.onset - 0.15)
+            else:  # carry on from the current pose (rewinding would snap back if you were moving)
+                self._held = self._history[-1][1].copy() if self._history else np.zeros(6)
+            self._held_t = now
+            diag("hand", 1.0)
+        if mode == "follow":
+            self.filter.k *= HAND_FILTER_FACTOR
+            target = self.filter(d)
+            step = HAND_MAX_SPEED * max(now - self._held_t, 0.0)
+            self._held = self._held + np.clip(target - self._held, -step, step)
+            self._held_t = now
+        return self._held.copy()
+
     def request_recenter(self):
         with self._lock:
             self._recenter_samples = []
@@ -245,8 +281,6 @@ class Tracker(threading.Thread):
             raise
 
     def _run(self):
-        import cv2
-        import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
         if not camera_access():
@@ -303,21 +337,15 @@ class Tracker(threading.Thread):
                     self._apply_rotation(r)
                 with self.shared.lock:
                     self.shared.cam_rotation_mode = self.rotation_mode
-                frame = raw_frame if not self.rotation else cv2.rotate(raw_frame, ROTATE_CODES[self.rotation])
-                ts = max(int((now - t0) * 1000), last_ts + 1)
-                last_ts = ts
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
+                frame = rotate(raw_frame, self.rotation)
+                last_ts = ts = max(int((now - t0) * 1000), last_ts + 1)
+                res = lm.detect_for_video(mp_image(frame), ts)
                 infer_ms = (time.monotonic() - now) * 1000
                 self._process(frame, res, now)
                 if self.hands is not None:
-                    face_box = None
-                    if res.face_landmarks:
-                        pts = np.array([[p.x, p.y] for p in res.face_landmarks[0]])
-                        face_box = (*pts.min(0), *pts.max(0))
-                    self.hands.submit(frame, now, face_box)
+                    self.hands.submit(frame, now, box(res.face_landmarks[0]) if res.face_landmarks else None)
                 if self.rotation_mode == "auto":
-                    self._check_orientation(res, raw_frame, now, probe_lm, mp, cv2)
+                    self._check_orientation(res, raw_frame, now, lambda img: probe_lm.detect(mp_image(img)))
                 # frame: when read returned, the camera's own timestamp, inference time
                 diag("frame", now, captured, infer_ms)
                 fps_n += 1
@@ -345,7 +373,7 @@ class Tracker(threading.Thread):
         M = np.asarray(res.facial_transformation_matrixes[0], dtype=float).reshape(4, 4)
         R = orthonormalize(M[:3, :3])
         p = R @ self.pivot + M[:3, 3]
-        lms = np.array([[l.x, l.y] for l in res.face_landmarks[0]], dtype=np.float32)
+        lms = np.array([[pt.x, pt.y] for pt in res.face_landmarks[0]], dtype=np.float32)
 
         recentering = False
         with self._lock:
@@ -359,9 +387,7 @@ class Tracker(threading.Thread):
                     self.filter.reset()
 
         # Recentering eases the view back to center while samples are collected.
-        raw = np.zeros(6)
-        vel = np.zeros(6)
-        d = None
+        raw, vel, d = np.zeros(6), np.zeros(6), None
         if self.R_ref is not None and not recentering:
             with sh.lock:
                 lost_for = now - sh.face_time
@@ -371,23 +397,7 @@ class Tracker(threading.Thread):
             d = head_delta(self.R_ref, self.p_ref, R, p)
             diag("pose", *d[:3])  # unfiltered, for tuning on real recordings
             if self.hands is not None and self.hands.at_face(now):
-                if self._held is None:  # a hand just arrived
-                    if self.cfg["hand_at_face"] == "hold":  # rewind past the hand's first effects
-                        self._held = self._pose_before(self.hands.onset - 0.15)
-                    else:  # carry on from the current pose (rewinding would snap back if you were moving)
-                        self._held = self._history[-1][1].copy() if self._history else np.zeros(6)
-                    self._held_t = now
-                    diag("hand", 1.0)
-                if self.cfg["hand_at_face"] == "follow":
-                    # Keep following, but steadied: a much stiffer filter and a speed limit
-                    # smooth out the jumps a hand causes while slower head movement still comes through.
-                    self.filter.k *= HAND_FILTER_FACTOR
-                    target = self.filter(d)
-                    step = HAND_MAX_SPEED * max(now - self._held_t, 0.0)
-                    self._held = self._held + np.clip(target - self._held, -step, step)
-                    self._held_t = now
-                raw = self._held.copy()
-                self._history.append((now, raw))
+                raw = self._hand_pose(d, now)
                 d = None  # no velocity / gap filling meanwhile
             else:
                 if self._held is not None:  # hand gone: back to normal, easing over
@@ -397,9 +407,9 @@ class Tracker(threading.Thread):
                     with sh.lock:
                         sh.reacquired_time = now
                 raw = self.filter(d)
-                self._history.append((now, raw))
                 if self.prev is not None and lost_for <= 0.3 and now - self.prev[1] < 0.1:
                     vel = (raw - self.prev[0]) / max(now - self.prev[1], 1e-3)
+            self._history.append((now, raw))
             diag("out", *raw[:3])
         self.prev = (raw, now) if d is not None else None
 

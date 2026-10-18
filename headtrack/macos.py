@@ -1,10 +1,9 @@
-"""macOS integration: App Nap and thread priority, global hotkeys, sounds, window visibility."""
+"""macOS integration: App Nap and thread priority, global hotkeys, sounds, and the preview window's events."""
 from __future__ import annotations
 
 import ctypes
 import subprocess
 import threading
-
 
 _activity = None  # must stay referenced, or macOS ends the activity
 
@@ -17,8 +16,7 @@ def disable_app_nap() -> bool:
     """
     global _activity
     try:
-        from Foundation import (NSActivityLatencyCritical, NSActivityUserInitiatedAllowingIdleSystemSleep,
-                                NSProcessInfo)
+        from Foundation import NSActivityLatencyCritical, NSActivityUserInitiatedAllowingIdleSystemSleep, NSProcessInfo
     except ImportError:
         return False
     _activity = NSProcessInfo.processInfo().beginActivityWithOptions_reason_(
@@ -133,3 +131,39 @@ def window_visible(title: str) -> bool:
         if window.title() == title:
             return bool(window.occlusionState() & NSWindowOcclusionStateVisible)
     return True
+
+
+def accept_first_click():
+    """macOS normally swallows the first click on a window that isn't in front, so clicking a
+    button while X-Plane had focus needed a second click. This process only has the preview
+    window, so opting all its views in is safe."""
+    try:
+        import objc
+        from AppKit import NSView
+    except ImportError:
+        return
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    objc.classAddMethods(NSView, [objc.selector(acceptsFirstMouse_, selector=b"acceptsFirstMouse:",
+                                                signature=b"Z@:@")])
+
+
+def pump_events() -> int:
+    """Handle every waiting window event right away; returns the last key pressed (-1 if none).
+    OpenCV's waitKey() handles one event and then sleeps ~10 ms, so mouse drags queued up and
+    the sliders trailed behind the mouse until macOS started merging the queued events."""
+    from AppKit import NSApplication, NSDefaultRunLoopMode, NSEventMaskAny, NSEventTypeKeyDown
+
+    app, key = NSApplication.sharedApplication(), -1
+    while True:
+        event = app.nextEventMatchingMask_untilDate_inMode_dequeue_(NSEventMaskAny, None, NSDefaultRunLoopMode, True)
+        if event is None:
+            break
+        if event.type() == NSEventTypeKeyDown and event.characters():
+            key = ord(event.characters()[0])  # handled by us, like waitKey() did (no system beep)
+            continue
+        app.sendEvent_(event)
+    app.updateWindows()
+    return key
