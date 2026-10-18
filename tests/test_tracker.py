@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from headtrack import tracker as tracker_mod
+from headtrack.tracker import HandWatcher, hand_over_face
 from headtrack.config import load_config
 from headtrack.pose import rot_z
 from headtrack.state import Shared
@@ -42,3 +43,34 @@ def test_head_tilt_or_brief_turn_keeps_orientation():
     assert tr.rotation == 0
     feed(tr, -85, 0.5)  # too brief
     assert tr.rotation == 0
+
+
+FACE = (0.4, 0.3, 0.6, 0.6)
+
+
+def test_hand_over_or_touching_the_face_counts():
+    assert hand_over_face([(0.45, 0.5, 0.55, 0.7)], FACE)  # over the mouth
+    assert hand_over_face([(0.61, 0.35, 0.7, 0.5)], FACE)  # touching the cheek (within the margin)
+    assert not hand_over_face([(0.75, 0.1, 0.9, 0.4)], FACE)  # raised beside the head
+    assert not hand_over_face([(0.45, 0.5, 0.55, 0.7)], None)  # no face
+
+
+def test_hand_watcher_holds_a_little_after_the_hand_leaves_and_marks_the_onset():
+    w = HandWatcher("unused", 15)
+    w.check([(0.75, 0.1, 0.9, 0.4)], FACE, 1.0)
+    assert not w.at_face(1.0)
+    w.check([(0.45, 0.5, 0.55, 0.7)], FACE, 2.0)
+    w.check([(0.45, 0.5, 0.55, 0.7)], FACE, 2.1)
+    assert w.at_face(2.15) and w.onset == 2.0
+    w.check([], FACE, 2.2)
+    assert w.at_face(2.3) and not w.at_face(2.5)
+    w.check([(0.45, 0.5, 0.55, 0.7)], FACE, 3.0)
+    assert w.onset == 3.0  # a new streak
+
+
+def test_holding_rewinds_to_before_the_hand():
+    tr = make_tracker()
+    for i in range(30):
+        tr._history.append((i / 30, np.full(6, float(i))))
+    assert tr._pose_before(0.5)[0] == 15
+    assert tr._pose_before(-1)[0] == 0

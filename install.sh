@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs or updates X-Plane Head Tracker. Everything goes into one folder (delete it to
-# uninstall): the code, a private copy of Python and the packages, and the face model.
+# uninstall): the code, a private copy of Python and the packages, and the face and hand models.
 #
 #   One line, no download needed:
 #     curl -fsSL https://raw.githubusercontent.com/ale316/macos-xplane-head-tracking/main/install.sh | bash
@@ -13,9 +13,12 @@ INSTALL_DIR="${HEADTRACK_DIR:-$HOME/X-Plane Head Tracker}"
 UV_VERSION=0.11.25
 UV_SHA256=5fc334bb25d19806262efd1f6e7d380155c7e817d89bf426df4ba7ae873c9471
 PYTHON_VERSION=3.12
-MODEL=models/face_landmarker.task
-MODEL_URL=https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
-MODEL_SHA256=64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+MODELS=(  # file, url, sha256
+  face_landmarker.task https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+  64184e229b263107bc2b804c6625db1341ff2bb731874b0bcc2fe6544e0bc9ff
+  hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+  fbc2a30080c3c557093b5ddfc334698132eb341044ccee322ccf8bcf3607cde1
+)
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
@@ -60,13 +63,16 @@ if [ ! -f .venv/.installed ] || [ requirements.txt -nt .venv/.installed ] || ! .
   touch .venv/.installed
 fi
 
-if [ ! -f "$MODEL" ] || [ "$(sha256 "$MODEL")" != "$MODEL_SHA256" ]; then
-  say "Downloading the face model"
-  mkdir -p models
-  curl -fsSL -o "$MODEL.part" "$MODEL_URL"
-  [ "$(sha256 "$MODEL.part")" = "$MODEL_SHA256" ] || { rm -f "$MODEL.part"; fail "The face model doesn't match its checksum. Please try again."; }
-  mv "$MODEL.part" "$MODEL"
-fi
+mkdir -p models
+for ((i = 0; i < ${#MODELS[@]}; i += 3)); do
+  file=models/${MODELS[i]} url=${MODELS[i + 1]} sum=${MODELS[i + 2]}
+  if [ ! -f "$file" ] || [ "$(sha256 "$file")" != "$sum" ]; then
+    say "Downloading ${MODELS[i]}"
+    curl -fsSL -o "$file.part" "$url"
+    [ "$(sha256 "$file.part")" = "$sum" ] || { rm -f "$file.part"; fail "$file doesn't match its checksum. Please try again."; }
+    mv "$file.part" "$file"
+  fi
+done
 
 # A launcher you can double-click in Finder. Downloaded files are quarantined by macOS;
 # you've just chosen to install from Terminal, so clear that for this folder.

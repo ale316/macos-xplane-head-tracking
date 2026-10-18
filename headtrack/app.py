@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 
 from .config import CONFIG_PATH, MODEL_PATH, load_config, save_settings, set_look_range
-from .macos import (camera_names, disable_app_nap, list_cameras, pick_camera, play_sound, set_thread_interactive,
-                    start_global_hotkeys)
+from .camera import list_cameras, pick_camera
+from .macos import disable_app_nap, play_sound, set_thread_interactive, start_global_hotkeys
 from .preview import preview_process, snapshot, status_lines
 from .state import Shared, close_diag, diag, enable_diag
 from .tracker import Tracker
@@ -55,14 +55,16 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.list_cameras:
-        list_cameras()
+        for i, cam in enumerate(list_cameras()):
+            print(f"{i}: {cam.name}")
         return 0
 
     cfg = load_config(args.config)
-    if args.camera is not None:
-        cfg["camera_index"], cfg["camera_name"] = args.camera, ""
+    cameras = list_cameras()
+    if args.camera is not None and args.camera < len(cameras):
+        camera = cameras[args.camera]
     else:
-        cfg["camera_index"] = pick_camera(cfg, camera_names())
+        camera = pick_camera(cfg, cameras)
     if args.host:
         cfg["xplane_host"] = args.host
     if args.port:
@@ -72,9 +74,10 @@ def main() -> int:
         return 1
 
     sh = Shared()
+    sh.cam_list = cameras
     sh.lean = bool(cfg["lean_enabled"])
     sh.smoothing = float(cfg["smoothing"])
-    tracker = Tracker(cfg, sh)
+    tracker = Tracker(cfg, sh, camera)
     link = XPlaneLink(cfg, sh)
     if args.diag:
         enable_diag(args.diag)
@@ -114,18 +117,21 @@ def main() -> int:
         save_settings(args.config, cfg)
         print(f"camera rotation: {mode} (saved)", flush=True)
 
-    def next_camera():
-        names = camera_names()
-        if len(names) < 2:
-            print("only one camera found", flush=True)
+    def refresh_cameras():
+        cameras = list_cameras()
+        with sh.lock:
+            sh.cam_list = cameras
+
+    def select_camera(index: int):
+        cameras = sh.cam_list
+        if index >= len(cameras) or cameras[index].id == sh.cam_id:
             return
-        index = (sh.cam_index + 1) % len(names)
-        tracker.request_camera(index)
-        cfg["camera_index"], cfg["camera_name"] = index, names[index]
+        tracker.request_camera(cameras[index])
+        cfg["camera_id"], cfg["camera_name"] = cameras[index].id, cameras[index].name
         save_settings(args.config, cfg)
 
     actions = {"recenter": tracker.request_recenter, "pause": toggle_pause, "lean": toggle_lean,
-               "camera_next": next_camera}
+               "cameras": refresh_cameras}
     set_thread_interactive()
     if not disable_app_nap():
         print("warning: couldn't disable App Nap")
@@ -148,6 +154,8 @@ def main() -> int:
                 set_smoothing(*arg)
             elif cmd == "preview":
                 sh.preview_on = arg[0]
+            elif cmd == "camera":
+                select_camera(arg[0])
             elif cmd == "rotation":
                 set_rotation(arg[0])
             elif cmd in actions:

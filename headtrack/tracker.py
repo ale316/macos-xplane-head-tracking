@@ -3,21 +3,106 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 
 import numpy as np
 
-from .config import MODEL_PATH
-from .macos import camera_names, lock_camera_fps, play_sound, set_thread_interactive
+from .config import HAND_MODEL_PATH, MODEL_PATH
+from .camera import Camera, CameraInfo, camera_access
+from .macos import play_sound, set_thread_interactive
 from .pose import AdaptiveFilter, euler_yxz, head_delta, orthonormalize, smoothing_k
 from .state import Shared, diag
 
 ROTATE_CODES = {90: 0, 180: 1, 270: 2}  # cv2.ROTATE_90_CLOCKWISE, ROTATE_180, ROTATE_90_COUNTERCLOCKWISE
+# While a hand is at the face ("follow" mode): filter this much stiffer, and limit the speed.
+HAND_FILTER_FACTOR = 4.0
+HAND_MAX_SPEED = np.array([60.0, 60.0, 60.0, 10.0, 10.0, 10.0])  # deg/s, cm/s
+
+
+def hand_over_face(hand_boxes: list, face_box, margin: float = 0.15) -> bool:
+    """Does any hand box overlap the face box grown by `margin` (fraction of its size)?"""
+    if face_box is None:
+        return False
+    fx0, fy0, fx1, fy1 = face_box
+    mx, my = (fx1 - fx0) * margin, (fy1 - fy0) * margin
+    return any(hx0 < fx1 + mx and hx1 > fx0 - mx and hy0 < fy1 + my and hy1 > fy0 - my
+               for hx0, hy0, hx1, hy1 in hand_boxes)
+
+
+class HandWatcher(threading.Thread):
+    """Looks for hands in front of the face, about 15 times a second alongside the tracking.
+
+    A hand over the mouth or chin usually doesn't make MediaPipe lose the face: it reports
+    the face with a wrong pose (up to 15 deg off in tests), which throws the view around.
+    So while a hand overlaps the face the tracker steadies the view (or holds it).
+    """
+
+    HOLD_S = 0.35  # keep holding this long after the hand was last seen at the face
+
+    def __init__(self, model_path, rate_hz: float):
+        super().__init__(daemon=True, name="hands")
+        self.model_path, self.period = model_path, 1.0 / rate_hz
+        self._cond = threading.Condition()
+        self._job = None
+        self._stopped = False
+        self.last_hit = -1e9  # capture time of the latest frame with a hand at the face
+        self.onset = 0.0  # capture time of the first such frame in the current streak
+        self.boxes: list = []
+
+    def submit(self, frame, t: float, face_box):
+        with self._cond:
+            self._job = (frame, t, face_box)
+            self._cond.notify()
+
+    def stop(self):
+        with self._cond:
+            self._stopped = True
+            self._cond.notify()
+
+    def at_face(self, now: float) -> bool:
+        return now - self.last_hit < self.HOLD_S
+
+    def check(self, boxes: list, face_box, t: float):
+        """Record the hands found in the frame captured at time t."""
+        self.boxes = boxes
+        if hand_over_face(boxes, face_box):
+            if t - self.last_hit >= self.HOLD_S:
+                self.onset = t
+            self.last_hit = t
+
+    def run(self):
+        import cv2
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+
+        set_thread_interactive()
+        opts = vision.HandLandmarkerOptions(base_options=BaseOptions(model_asset_path=str(self.model_path)),
+                                            running_mode=vision.RunningMode.VIDEO, num_hands=2)
+        last_ts = -1
+        with vision.HandLandmarker.create_from_options(opts) as lm:
+            while True:
+                with self._cond:
+                    while self._job is None and not self._stopped:
+                        self._cond.wait(0.5)
+                    if self._stopped:
+                        return
+                    (frame, t, face_box), self._job = self._job, None
+                start = time.monotonic()
+                last_ts = ts = max(int(t * 1000), last_ts + 1)
+                res = lm.detect_for_video(
+                    mp.Image(image_format=mp.ImageFormat.SRGB, data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)), ts)
+                boxes = []
+                for hand in res.hand_landmarks:
+                    pts = np.array([[p.x, p.y] for p in hand])
+                    boxes.append((*pts.min(0), *pts.max(0)))
+                self.check(boxes, face_box, t)
+                time.sleep(max(0.0, self.period - (time.monotonic() - start)))
 
 
 class Tracker(threading.Thread):
-    def __init__(self, cfg: dict, shared: Shared):
+    def __init__(self, cfg: dict, shared: Shared, camera: CameraInfo | None = None):
         super().__init__(daemon=True, name="tracker")
-        self.cfg, self.shared = cfg, shared
+        self.cfg, self.shared, self.camera = cfg, shared, camera
         self.prev = None  # (filtered pose, capture time) of the previous frame
         self.filter = AdaptiveFilter(smoothing_k(40), floor=np.array([0.05] * 3 + [0.03] * 3))
         self.pivot = np.array(cfg["translation_pivot_cm"], dtype=float)
@@ -33,32 +118,32 @@ class Tracker(threading.Thread):
         self._probe_hits: dict[int, int] = {}
         self._probe_i, self._probe_next = 0, 0.0
         self._tilted_since = None  # when the tracked face started looking turned on its side
+        self.hands: HandWatcher | None = None
+        self._held = None  # output pose while a hand is at the face
+        self._held_t = 0.0
+        self._history = deque(maxlen=90)  # recent (time, pose), to rewind past a hand's first effects
 
-    def request_camera(self, index: int):
-        """Switch to another camera (by OpenCV/AVFoundation number) while running."""
-        self._new_camera = index
+    def request_camera(self, camera: CameraInfo):
+        """Switch to another camera while running."""
+        self._new_camera = camera
 
-    def _open_camera(self, index: int):
-        """Open and frame-rate-lock a camera. Returns (capture, locked device) or None."""
-        import cv2
-
-        cap = cv2.VideoCapture(index, cv2.CAP_AVFOUNDATION)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg["camera_width"])
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg["camera_height"])
-        if not cap.isOpened():
-            cap.release()
+    def _open_camera(self, camera: CameraInfo | None) -> Camera | None:
+        if camera is None:
             return None
-        locked_dev, info = None, ""
-        if cap.read()[0]:  # the capture session is running now
-            w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            locked_dev, info = lock_camera_fps(index, w, h, self.cfg["camera_fps"])
-        names = camera_names()
-        name = names[index] if index < len(names) else f"camera {index}"
-        print(f"camera: {name} ({info})", flush=True)
+        try:
+            cam = Camera(camera.id, self.cfg["camera_width"], self.cfg["camera_height"], self.cfg["camera_fps"])
+        except Exception as e:  # AVFoundation errors arrive as various exception types
+            print(f"camera {camera.name}: {e}", flush=True)
+            with self.shared.lock:
+                self.shared.error = f"camera {camera.name}: {e}"
+            return None
+        print(f"camera: {cam.name}, {cam.mode}", flush=True)
         with self.shared.lock:
-            self.shared.cam_index, self.shared.cam_name, self.shared.cam_info = index, name, info
+            self.shared.cam_id, self.shared.cam_name = camera.id, cam.name
+            self.shared.cam_info = f"locked at {cam.fps} fps"
+            self.shared.cam_target_fps = cam.fps
             self.shared.error = None
-        return cap, locked_dev
+        return cam
 
     def set_rotation_mode(self, mode):
         """'auto' or a fixed clockwise rotation (0/90/180/270) for the camera image."""
@@ -121,6 +206,13 @@ class Tracker(threading.Thread):
         print(f"camera orientation: rotating image {r} deg", flush=True)
         self.request_recenter()  # a turned camera means a new neutral pose
 
+    def _pose_before(self, t: float) -> np.ndarray:
+        """The last pose from before time t (or the oldest one kept)."""
+        before = [pose for when, pose in self._history if when <= t]
+        if before:
+            return before[-1].copy()
+        return self._history[0][1].copy() if self._history else np.zeros(6)
+
     def request_recenter(self):
         with self._lock:
             self._recenter_samples = []
@@ -140,13 +232,24 @@ class Tracker(threading.Thread):
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
-        opened = self._open_camera(int(self.cfg["camera_index"]))
-        if opened is None:
+        if not camera_access():
             with self.shared.lock:
-                self.shared.error = ("Could not open the camera. Allow Terminal under System Settings > "
-                                     "Privacy & Security > Camera, or pick another camera.")
+                self.shared.error = ("No camera access. Allow Terminal under System Settings > "
+                                     "Privacy & Security > Camera, then start again.")
             return
-        cap, locked_dev = opened
+        cam = self._open_camera(self.camera)
+        while cam is None and not self.shared.quit:  # wait for another camera to be picked
+            with self.shared.lock:
+                self.shared.error = self.shared.error or "Could not open the camera. Pick another camera."
+            time.sleep(0.2)
+            if self._new_camera is not None:
+                self.camera, self._new_camera = self._new_camera, None
+                cam = self._open_camera(self.camera)
+        if cam is None:
+            return
+        if self.cfg["hand_at_face"] != "off" and HAND_MODEL_PATH.exists():
+            self.hands = HandWatcher(HAND_MODEL_PATH, self.cfg["hand_check_hz"])
+            self.hands.start()
 
         opts = vision.FaceLandmarkerOptions(
             # CPU only: MediaPipe's Metal (GPU) path fails to detect faces at webcam resolution.
@@ -166,22 +269,19 @@ class Tracker(threading.Thread):
                 vision.FaceLandmarker.create_from_options(probe_opts) as probe_lm:
             while not self.shared.quit:
                 if self._new_camera is not None:
-                    index, self._new_camera = self._new_camera, None
-                    if locked_dev is not None:
-                        locked_dev.unlockForConfiguration()
-                    cap.release()
-                    opened = self._open_camera(index) or self._open_camera(self.shared.cam_index)
-                    if opened is None:
+                    new, self._new_camera = self._new_camera, None
+                    cam.close()
+                    cam = self._open_camera(new) or self._open_camera(self.camera)
+                    if cam is None:
                         with self.shared.lock:
                             self.shared.error = "Could not open the camera."
                         return
-                    cap, locked_dev = opened
+                    self.camera = new if self.shared.cam_id == new.id else self.camera
                     self.filter.reset()
                     self.prev = None
                     self.request_recenter()  # a different camera means a new neutral pose
-                ok, raw_frame = cap.read()
-                if not ok:
-                    time.sleep(0.01)
+                raw_frame, captured = cam.read()
+                if raw_frame is None:
                     continue
                 now = time.monotonic()
                 if self._new_rotation is not None:
@@ -196,18 +296,24 @@ class Tracker(threading.Thread):
                 res = lm.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), ts)
                 infer_ms = (time.monotonic() - now) * 1000
                 self._process(frame, res, now)
+                if self.hands is not None:
+                    face_box = None
+                    if res.face_landmarks:
+                        pts = np.array([[p.x, p.y] for p in res.face_landmarks[0]])
+                        face_box = (*pts.min(0), *pts.max(0))
+                    self.hands.submit(frame, now, face_box)
                 if self.rotation_mode == "auto":
                     self._check_orientation(res, raw_frame, now, probe_lm, mp, cv2)
                 # frame: when read returned, the camera's own timestamp, inference time
-                diag("frame", now, cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0, infer_ms)
+                diag("frame", now, captured, infer_ms)
                 fps_n += 1
                 if now - fps_t >= 1.0:
                     with self.shared.lock:
                         self.shared.cam_fps = fps_n / (now - fps_t)
                     fps_t, fps_n = now, 0
-        if locked_dev is not None:
-            locked_dev.unlockForConfiguration()
-        cap.release()
+        if self.hands is not None:
+            self.hands.stop()
+        cam.close()
 
     def _process(self, frame, res, now: float):
         sh = self.shared
@@ -248,9 +354,38 @@ class Tracker(threading.Thread):
             if lost_for > 0.3:  # don't let the filter interpolate across a gap
                 self.filter.reset()
             d = head_delta(self.R_ref, self.p_ref, R, p)
-            raw = self.filter(d)
-            if self.prev is not None and lost_for <= 0.3 and now - self.prev[1] < 0.1:
-                vel = (raw - self.prev[0]) / max(now - self.prev[1], 1e-3)
+            diag("pose", *d[:3])  # unfiltered, for tuning on real recordings
+            if self.hands is not None and self.hands.at_face(now):
+                if self._held is None:  # a hand just arrived
+                    if self.cfg["hand_at_face"] == "hold":  # rewind past the hand's first effects
+                        self._held = self._pose_before(self.hands.onset - 0.15)
+                    else:  # carry on from the current pose (rewinding would snap back if you were moving)
+                        self._held = self._history[-1][1].copy() if self._history else np.zeros(6)
+                    self._held_t = now
+                    diag("hand", 1.0)
+                if self.cfg["hand_at_face"] == "follow":
+                    # Keep following, but steadied: a much stiffer filter and a speed limit
+                    # smooth out the jumps a hand causes while slower head movement still comes through.
+                    self.filter.k *= HAND_FILTER_FACTOR
+                    target = self.filter(d)
+                    step = HAND_MAX_SPEED * max(now - self._held_t, 0.0)
+                    self._held = self._held + np.clip(target - self._held, -step, step)
+                    self._held_t = now
+                raw = self._held.copy()
+                self._history.append((now, raw))
+                d = None  # no velocity / gap filling meanwhile
+            else:
+                if self._held is not None:  # hand gone: back to normal, easing over
+                    self._held = None
+                    diag("hand", 0.0)
+                    self.filter.reset()
+                    with sh.lock:
+                        sh.reacquired_time = now
+                raw = self.filter(d)
+                self._history.append((now, raw))
+                if self.prev is not None and lost_for <= 0.3 and now - self.prev[1] < 0.1:
+                    vel = (raw - self.prev[0]) / max(now - self.prev[1], 1e-3)
+            diag("out", *raw[:3])
         self.prev = (raw, now) if d is not None else None
 
         with sh.lock:
@@ -259,6 +394,8 @@ class Tracker(threading.Thread):
             sh.frame, sh.landmarks = frame, lms
             sh.face_ok, sh.face_time = True, now
             sh.recentering = recentering
+            sh.hand_at_face = self._held is not None
+            sh.hand_boxes = self.hands.boxes if self.hands is not None else []
             sh.has_ref = self.R_ref is not None
             sh.raw, sh.raw_vel, sh.raw_time = raw, vel, time.monotonic()
             sh.noise = self.filter.noise.copy()

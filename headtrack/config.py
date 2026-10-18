@@ -7,6 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = ROOT / "models" / "face_landmarker.task"
+HAND_MODEL_PATH = ROOT / "models" / "hand_landmarker.task"
 CONFIG_PATH = ROOT / "config.json"
 
 
@@ -14,8 +15,8 @@ AXES = ("yaw", "pitch", "roll", "x", "y", "z")
 
 
 DEFAULT_CONFIG = {
-    "camera_index": 0,
-    "camera_name": "",  # preferred camera; found by name when connected, else camera_index
+    "camera_id": "",  # chosen in the preview; found again by ID, or by name
+    "camera_name": "",
     "camera_width": 640,
     "camera_height": 480,
     "xplane_host": "127.0.0.1",
@@ -37,8 +38,12 @@ DEFAULT_CONFIG = {
     # Leaning (x/y/z translation) on at startup; toggle at runtime with the lean hotkey / L.
     "lean_enabled": True,
     # When the face is lost, the view eases back to center after this long.
-    "face_lost_timeout_s": 0.6,
-    "face_lost_smoothing_s": 0.5,
+    "face_lost_timeout_s": 1.5,
+    "face_lost_smoothing_s": 0.8,
+    # A hand in front of the face makes MediaPipe report jumpy, partly wrong poses meanwhile:
+    # "follow" keeps tracking but steadied, "hold" freezes the view, "off" ignores hands.
+    "hand_at_face": "follow",
+    "hand_check_hz": 15,
     # Only drive the view while X-Plane is in the 3D cockpit view.
     "only_in_cockpit_view": True,
     "recenter_frames": 8,
@@ -92,7 +97,8 @@ def save_settings(path: Path, cfg: dict):
     """Write the slider settings into the config file, leaving everything else as is."""
     data = json.loads(path.read_text()) if path.exists() else {}
     data["smoothing"] = cfg["smoothing"]
-    data["camera_index"], data["camera_name"] = cfg["camera_index"], cfg["camera_name"]
+    data["camera_id"], data["camera_name"] = cfg["camera_id"], cfg["camera_name"]
+    data.pop("camera_index", None)  # older versions picked cameras by number
     data["camera_rotation"] = cfg["camera_rotation"]
     data.pop("smoothing_level", None)
     for axis in ("yaw", "pitch"):

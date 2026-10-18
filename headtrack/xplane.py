@@ -6,10 +6,12 @@ packets write sim/graphics/view/pilots_head_* at a fixed rate.
 from __future__ import annotations
 
 import math
+import re
 import socket
 import struct
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -30,6 +32,64 @@ DATAREFS = {
 VIEW_TYPE_DREF = "sim/graphics/view/view_type"
 VIEW_3D_COCKPIT = 1026
 FOV_DREF = "sim/graphics/view/field_of_view_deg"
+FLIGHT_TIME_DREF = "sim/time/total_flight_time_sec"  # drops when a new flight starts
+FEET = 0.3048
+MAX_BASE_PITCH = 15.0  # X-Plane's default view looks a little down (e.g. -6 deg); more is a panned view
+
+
+def xplane_folder() -> Path | None:
+    """The folder of the X-Plane that's running on this Mac."""
+    try:
+        from AppKit import NSWorkspace
+    except ImportError:
+        return None
+    for app in NSWorkspace.sharedWorkspace().runningApplications():
+        if (app.localizedName() or "").startswith("X-Plane") and app.bundleURL() is not None:
+            return Path(app.bundleURL().path()).parent
+    return None
+
+
+def acf_eye_point(acf_text: str) -> np.ndarray | None:
+    """The designed pilot eye point from an .acf file, in X-Plane's pilots_head_x/y/z frame
+    (meters from the reference CG; the file has feet from the aircraft's reference point)."""
+    v = dict(re.findall(r"^P acf/(_pe_xyz/[012]|_cgX_lft|_cgX_rgt|_cgY|_cgZ) (\S+)$", acf_text, re.M))
+    try:
+        cg_x = (float(v["_cgX_lft"]) + float(v["_cgX_rgt"])) / 2
+        return np.array([float(v["_pe_xyz/0"]) - cg_x, float(v["_pe_xyz/1"]) - float(v["_cgY"]),
+                         float(v["_pe_xyz/2"]) - float(v["_cgZ"])]) * FEET
+    except (KeyError, ValueError):
+        return None
+
+
+class EyePoint:
+    """The current aircraft's seat position, from the .acf file X-Plane's log says it loaded.
+
+    X-Plane keeps the eye point and the live head position in the same variable, so the
+    tracker's own writes move it; it can't be read back as a reference. The file can't be.
+    """
+
+    def __init__(self, folder: Path | None):
+        self.folder = folder
+        self.log_stamp = None
+        self.acf = None
+        self.point: np.ndarray | None = None
+
+    def refresh(self) -> np.ndarray | None:
+        if self.folder is None:
+            return None
+        log = self.folder / "Log.txt"
+        try:
+            st = log.stat()
+            if (st.st_mtime, st.st_size) != self.log_stamp:
+                self.log_stamp = (st.st_mtime, st.st_size)
+                loads = re.findall(r"Loading airplane number 0 with (.+?\.acf)", log.read_text(errors="replace"))
+                if loads and loads[-1] != self.acf:
+                    self.acf = loads[-1]
+                    self.point = acf_eye_point((self.folder / self.acf).read_text(errors="replace"))
+                    print(f"aircraft: {Path(self.acf).stem}, eye point {self.point}", flush=True)
+        except OSError:
+            pass
+        return self.point
 # Our head convention is yaw right+, pitch up+, roll right+, x right+, y up+, z forward+.
 # X-Plane's aircraft frame has +z pointing aft, so leaning forward means decreasing z.
 XPLANE_SIGN = np.array([1.0, 1.0, 1.0, 1.0, 1.0, -1.0])
@@ -38,9 +98,9 @@ XPLANE_SIGN = np.array([1.0, 1.0, 1.0, 1.0, 1.0, -1.0])
 class XPlaneLink(threading.Thread):
     """Talks to X-Plane's native UDP interface.
 
-    RREF subscriptions read X-Plane's own head pose (our "base", e.g. the default eye
-    point of the current aircraft) and the current view type; DREF packets write
-    base + tracked offset back at send_rate_hz.
+    The view is written as base + tracked offset at send_rate_hz. The base is the aircraft's
+    seat position (from its .acf file when X-Plane runs on this Mac) looking straight ahead;
+    RREF subscriptions read the view type, field of view and X-Plane's default view pitch.
     """
 
     SETTLE_S = 0.3  # wait this long after our last write before trusting X-Plane's values as base
@@ -52,7 +112,11 @@ class XPlaneLink(threading.Thread):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", 0))
         self.sock.setblocking(False)
-        self.names = [DATAREFS[a] for a in AXES] + [VIEW_TYPE_DREF, FOV_DREF]
+        self.names = [DATAREFS[a] for a in AXES] + [VIEW_TYPE_DREF, FOV_DREF, FLIGHT_TIME_DREF]
+        local = cfg["xplane_host"] in ("127.0.0.1", "localhost")
+        self.eye = EyePoint(xplane_folder() if local else None)
+        self.next_eye_check = 0.0
+        self.flight_time = None
         self.values: dict[int, tuple[float, float]] = {}  # index -> (value, rx time)
         self.last_rx = 0.0
         self.last_sent = 0.0
@@ -133,15 +197,33 @@ class XPlaneLink(threading.Thread):
             in_cockpit = (not cfg["only_in_cockpit_view"]) or view_type in (None, VIEW_3D_COCKPIT)
             want_active = connected and in_cockpit and not paused and has_ref and not quitting
 
+            if now >= self.next_eye_check:
+                self.next_eye_check = now + 1.0
+                if self.eye.folder is None and now - self.last_rx < 2.0 and self.eye.log_stamp is None:
+                    self.eye.folder = xplane_folder() if cfg["xplane_host"] in ("127.0.0.1", "localhost") else None
+                self.eye.refresh()
+            flight = self.values.get(len(AXES) + 2)
+            if flight is not None:
+                if self.flight_time is not None and flight[0] < self.flight_time - 1.0:
+                    self.base = self.prev_out = None  # a new flight: take the new seat position
+                self.flight_time = flight[0]
+
             if want_active and self.base is None:
+                # X-Plane's own head pose, once our writes have stopped echoing back.
                 head = [self.values.get(i) for i in range(len(AXES))]
                 if all(h and h[1] > self.last_sent + self.SETTLE_S for h in head):
                     captured = np.array([h[0] for h in head])
                     # If X-Plane is still showing our last written pose (e.g. after a view
                     # switch round-trip), keep the old base instead of baking in the offset.
                     stale = self.prev_out is not None and np.allclose(captured, self.prev_out, atol=1e-3)
-                    self.base = self.prev_base if stale else captured
+                    if stale:
+                        self.base = self.prev_base
+                    else:  # straight ahead and level, at X-Plane's default view pitch
+                        pitch = captured[1] if abs(captured[1]) <= MAX_BASE_PITCH else 0.0
+                        self.base = np.array([0.0, pitch, 0.0, *captured[3:]])
                     self.smoothed = np.zeros(6)
+            if self.base is not None and self.eye.point is not None:
+                self.base[3:] = self.eye.point  # the seat position from the aircraft file
             active = want_active and self.base is not None
 
             out = None

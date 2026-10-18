@@ -69,10 +69,17 @@ def test_camera_button_cycles_rotation():
     assert seen == [0, 90, 180, 270, "auto"]
 
 
-def test_camera_button_asks_for_the_next_camera():
+def test_camera_dropdown_lists_cameras_and_picks_one():
     ui = make_ui()
-    press(ui, ("camera_next",))
-    assert ui.cmd_q[-1] == ("camera_next",)
+    st = {"cam_names": ["FaceTime HD Camera", "iPhone Camera"], "cam_index": 0, "cam_name": "FaceTime HD Camera",
+          "cam_rotation": 0, "cam_rotation_mode": "auto", "paused": False, "lean": True}
+    ui.draw_controls(np.zeros((ui.controls_top() + CTRL_H, 800, 3), np.uint8), ui.controls_top(), st)
+    press(ui, ("camera_menu",))
+    assert ui.menu_open and ui.cmd_q[-1] == ("cameras",)  # asks the engine to refresh the list
+    ui.draw_controls(np.zeros((ui.controls_top() + CTRL_H, 800, 3), np.uint8), ui.controls_top(), st)
+    (x0, y0, x1, y1), cmd = ui.menu_items[1]
+    click(ui, (x0 + x1) / 2, (y0 + y1) / 2)
+    assert cmd == ("camera", 1) and ui.cmd_q[-1] == ("camera", 1) and not ui.menu_open
 
 
 def test_buttons_fit_the_window():

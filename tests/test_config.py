@@ -2,7 +2,7 @@ import copy
 import json
 
 from headtrack.config import DEFAULT_CONFIG, load_config, save_settings, set_look_range
-from headtrack.macos import pick_camera
+from headtrack.camera import CameraInfo, pick_camera
 
 
 def test_look_range_limits_and_pitch_follows():
@@ -25,19 +25,22 @@ def test_old_smoothing_level_converts(tmp_path):
 
 def test_save_keeps_other_settings(tmp_path):
     path = tmp_path / "config.json"
-    path.write_text(json.dumps({"camera_index": 1, "smoothing_level": 2, "axes": {"yaw": {"exponent": 2.0}}}))
+    path.write_text(json.dumps({"send_rate_hz": 90, "smoothing_level": 2, "axes": {"yaw": {"exponent": 2.0}}}))
     cfg = load_config(path)
     set_look_range(cfg, 90)
     cfg["smoothing"], cfg["camera_rotation"] = 55, 90
     save_settings(path, cfg)
     saved = json.loads(path.read_text())
-    assert saved["camera_index"] == 1 and saved["axes"]["yaw"]["exponent"] == 2.0
+    assert saved["send_rate_hz"] == 90 and saved["axes"]["yaw"]["exponent"] == 2.0
     assert "smoothing_level" not in saved
     assert (saved["smoothing"], saved["camera_rotation"], saved["axes"]["yaw"]["output_max"]) == (55, 90, 90.0)
 
 
-def test_saved_camera_is_found_by_name():
-    cfg = dict(DEFAULT_CONFIG, camera_index=0, camera_name="iPhone Camera")
-    assert pick_camera(cfg, ["FaceTime HD Camera", "Desk View Camera", "iPhone Camera"]) == 2
-    assert pick_camera(cfg, ["FaceTime HD Camera"]) == 0  # iPhone not around: saved number
-    assert pick_camera(dict(cfg, camera_index=3, camera_name=""), ["FaceTime HD Camera"]) == 0
+def test_saved_camera_is_found_by_id_then_name():
+    facetime, iphone = CameraInfo("A1", "FaceTime HD Camera"), CameraInfo("B2", "iPhone Camera")
+    cfg = dict(DEFAULT_CONFIG, camera_id="B2", camera_name="iPhone Camera")
+    assert pick_camera(cfg, [facetime, iphone]) == iphone
+    assert pick_camera(cfg, [iphone, facetime]) == iphone  # macOS listed them in another order
+    assert pick_camera(dict(cfg, camera_id="other"), [facetime, iphone]) == iphone  # same name, new ID
+    assert pick_camera(cfg, [facetime]) == facetime  # iPhone not around: the first camera
+    assert pick_camera(cfg, []) is None

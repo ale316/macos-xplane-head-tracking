@@ -38,17 +38,22 @@ def status_lines(sh: Shared, cfg: dict) -> list[str]:
     elif sh.recentering:
         tr = "Tracking: recentering - look at the screen"
     elif not sh.face_ok:
-        tr = "Tracking: no face"
+        tr = "Tracking: no face - holding view"
+    elif sh.hand_at_face:
+        tr = f"Tracking: hand at face - {'holding view' if cfg['hand_at_face'] == 'hold' else 'steadied'}"
     else:
         tr = "Tracking: OK"
     n = sh.noise
+    if sh.cam_target_fps and 0 < sh.cam_fps < 0.75 * sh.cam_target_fps:
+        xp += f"   camera at {sh.cam_fps:.0f} of {sh.cam_target_fps} fps: Video Effects on? (Control Center)"
     tr += f"   look +/-{cfg['axes']['yaw']['output_max']:.0f}/{cfg['axes']['pitch']['output_max']:.0f} deg"
     return [xp, f"{tr}   smooth {sh.smoothing:.0f}%   lean {'ON' if sh.lean else 'OFF'}   cam {sh.cam_fps:.0f} fps{' (locked)' if 'locked at' in sh.cam_info else ''}{f' rot {sh.cam_rotation}' if sh.cam_rotation else ''}",
             f"noise: yaw {n[0]:.2f} pit {n[1]:.2f} roll {n[2]:.2f} deg  x {n[3]:.2f} y {n[4]:.2f} z {n[5]:.2f} cm"]
 
 
 STATUS_FIELDS = ("error", "xp_connected", "xp_view", "xp_active", "xp_fov", "paused", "recentering", "face_ok",
-                 "smoothing", "lean", "cam_fps", "cam_info", "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw",
+                 "hand_at_face", "hand_boxes",
+                 "smoothing", "lean", "cam_fps", "cam_info", "cam_target_fps", "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw",
                  "target", "landmarks")
 
 
@@ -56,6 +61,8 @@ def snapshot(sh: Shared, cfg: dict, with_frame: bool) -> dict:
     """Picklable copy of what the preview shows; the camera frame goes as JPEG."""
     with sh.lock:
         st = {k: getattr(sh, k) for k in STATUS_FIELDS}
+        st["cam_names"] = [c.name for c in sh.cam_list]
+        st["cam_index"] = next((i for i, c in enumerate(sh.cam_list) if c.id == sh.cam_id), None)
         frame = sh.frame  # the tracker replaces (never mutates) frames, so no copy needed
     st = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in st.items()}
     st["axes"] = copy.deepcopy(cfg["axes"])  # ranges can change at runtime
@@ -151,6 +158,8 @@ class PreviewUI:
         self.smoothing = float(cfg["smoothing"])
         self.drag = None  # "range" | "smooth" while the mouse button is held on a slider
         self.rotation_mode = cfg["camera_rotation"]
+        self.menu_open = False  # camera list
+        self.menu_items: list[tuple[tuple[int, int, int, int], tuple]] = []
         self.buttons: list[tuple[tuple[int, int, int, int], tuple]] = []
         self.cockpit = None
         self.dirty = True
@@ -161,6 +170,15 @@ class PreviewUI:
         import cv2
 
         top = self.controls_top()
+        if event == cv2.EVENT_LBUTTONDOWN and self.menu_open:
+            self.menu_open, self.dirty = False, True
+            for (x0, y0, x1, y1), cmd in self.menu_items:
+                if x0 <= x <= x1 and y0 <= y <= y1:
+                    self.cmd_q.put(cmd)
+                    return
+            for (x0, y0, x1, y1), cmd in self.buttons:  # clicking the camera button again just closes it
+                if cmd == ("camera_menu",) and x0 <= x <= x1 and y0 <= y <= y1:
+                    return
         if event == cv2.EVENT_LBUTTONDOWN:
             if top + 10 <= y < top + 45 and SLIDER_X0 - 15 <= x <= SLIDER_X1 + 15:
                 self.drag = "range"
@@ -197,6 +215,9 @@ class PreviewUI:
         if cmd == ("preview",):
             self.preview_on = not self.preview_on
             self.cmd_q.put(("preview", self.preview_on))
+        elif cmd == ("camera_menu",):
+            self.menu_open = not self.menu_open
+            self.cmd_q.put(("cameras",))  # refresh the list, e.g. an iPhone that just connected
         elif cmd == ("rotation",):  # cycle auto -> 0 -> 90 -> 180 -> 270 -> auto
             modes = ["auto", 0, 90, 180, 270]
             cur = self.rotation_mode if self.rotation_mode in modes else "auto"
@@ -247,6 +268,10 @@ class PreviewUI:
             if st is not None and st["landmarks"] is not None:
                 for x, y in st["landmarks"][::3]:
                     cv2.circle(cam, (int((1 - x) * fw), int(y * CAM_H)), 1, (80, 220, 120), -1)
+            for x0, y0, x1, y1 in (st or {}).get("hand_boxes") or []:
+                color = (0, 140, 255) if st["hand_at_face"] else (200, 200, 200)
+                cv2.rectangle(cam, (int((1 - x1) * fw), int(y0 * CAM_H)), (int((1 - x0) * fw), int(y1 * CAM_H)),
+                              color, 2)
             area[:, (cw - fw) // 2:(cw - fw) // 2 + fw] = cam
         if st is None:
             return
@@ -317,7 +342,9 @@ class PreviewUI:
         cv2.putText(img, "Camera", (10, y0 + 21), font, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
         name = (st or {}).get("cam_name") or "..."
         name = name if len(name) <= 30 else name[:29] + "..."
-        x = self.button(img, SLIDER_X0, y0, f"{name}  >", ("camera_next",))
+        x = self.button(img, SLIDER_X0, y0, f"{name}    ", ("camera_menu",))
+        tri = np.array([[x - 22, y0 + 13], [x - 10, y0 + 13], [x - 16, y0 + 20]], np.int32)
+        cv2.fillPoly(img, [tri], (240, 240, 240))  # dropdown arrow
         self.button(img, x + 10, y0, self.rotation_label(st), ("rotation",))
         # main buttons
         paused = bool(st and st["paused"])
@@ -328,6 +355,32 @@ class PreviewUI:
                            (f"Lean: {'ON' if lean else 'OFF'}", ("lean",)), ("Quit", ("quit",))):
             x = self.button(img, x, y0, label, cmd) + 10
         cv2.putText(img, self.hotkey_status, (x + 6, y0 + 21), font, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
+        self.menu_items = []
+        if self.menu_open:
+            self.draw_camera_menu(img, top + 98, st)
+
+    def draw_camera_menu(self, img, button_y: int, st):
+        """The list of cameras, opening upwards from the camera button."""
+        import cv2
+
+        names = (st or {}).get("cam_names") or []
+        current = (st or {}).get("cam_index")
+        if not names:
+            names, current = ["(no cameras found)"], None
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        w = max(cv2.getTextSize(n, font, 0.5, 1)[0][0] for n in names) + 60
+        x0, y1 = SLIDER_X0, button_y - 4
+        y0 = max(0, y1 - 30 * len(names) - 8)
+        cv2.rectangle(img, (x0, y0), (x0 + w, y1), (55, 55, 55), -1)
+        cv2.rectangle(img, (x0, y0), (x0 + w, y1), (150, 150, 150), 1)
+        for i, n in enumerate(names):
+            top = y0 + 4 + 30 * i
+            cv2.circle(img, (x0 + 18, top + 15), 7, (200, 200, 200), 1, cv2.LINE_AA)
+            if i == current:
+                cv2.circle(img, (x0 + 18, top + 15), 4, (0, 200, 255), -1, cv2.LINE_AA)
+            cv2.putText(img, n, (x0 + 34, top + 20), font, 0.5, (240, 240, 240), 1, cv2.LINE_AA)
+            if current is not None:
+                self.menu_items.append(((x0, top, x0 + w, top + 30), ("camera", i)))
 
     def button(self, img, x: int, y: int, label: str, cmd: tuple) -> int:
         """Draws a button and registers it for clicks; returns its right edge."""

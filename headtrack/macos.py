@@ -37,46 +37,6 @@ def set_thread_interactive():
         pass
 
 
-def lock_camera_fps(index: int, width: int, height: int, want_fps: float):
-    """Pin the camera to its fastest format at this size, at up to `want_fps`.
-
-    Mac cameras otherwise let auto-exposure stretch frames in dim light (30 -> 15 fps, which
-    doubles their latency), and OpenCV never picks 60 fps formats on its own. Must be called
-    after OpenCV has opened the camera. Returns (device to unlock on exit or None, message).
-    """
-    try:
-        import CoreMedia as CM
-        devs = capture_devices()
-    except ImportError:
-        return None, "camera fps not locked (pyobjc-framework-AVFoundation not installed)"
-    if index >= len(devs):
-        return None, "camera fps not locked (device not found)"
-    dev = devs[index]
-    best, best_fps = None, 0.0
-    for f in dev.formats():
-        dims = CM.CMVideoFormatDescriptionGetDimensions(f.formatDescription())
-        top = max((r.maxFrameRate() for r in f.videoSupportedFrameRateRanges()), default=0.0)
-        if (dims.width, dims.height) == (width, height) and top > best_fps:
-            best, best_fps = f, top
-    if best is None:
-        return None, f"camera fps not locked (no {width}x{height} format)"
-    fps = int(min(want_fps, best_fps))
-    ok, _ = dev.lockForConfiguration_(None)
-    if not ok:
-        return None, "camera fps not locked (camera busy)"
-    try:
-        if best != dev.activeFormat():
-            dev.setActiveFormat_(best)
-        frame = CM.CMTimeMake(1, fps)
-        dev.setActiveVideoMinFrameDuration_(frame)
-        dev.setActiveVideoMaxFrameDuration_(frame)
-    except Exception as e:  # out-of-range durations raise; keep the camera's own setting
-        dev.unlockForConfiguration()
-        return None, f"camera fps not locked ({e})"
-    # Stay locked: other apps (or the session) can't renegotiate the frame rate meanwhile.
-    return dev, f"{dev.localizedName()} locked at {fps} fps"
-
-
 def play_sound(cfg: dict, name: str):
     if cfg.get("sounds"):
         try:
@@ -168,31 +128,3 @@ def app_focused() -> bool:
     except ImportError:
         return True
     return bool(NSApplication.sharedApplication().isActive())
-
-
-def capture_devices() -> list:
-    """Cameras, in the order OpenCV's AVFoundation backend numbers them."""
-    import AVFoundation as AV
-
-    return (list(AV.AVCaptureDevice.devicesWithMediaType_(AV.AVMediaTypeVideo))
-            + list(AV.AVCaptureDevice.devicesWithMediaType_(AV.AVMediaTypeMuxed)))
-
-
-def camera_names() -> list[str]:
-    try:
-        return [str(d.localizedName()) for d in capture_devices()]
-    except ImportError:
-        return []
-
-
-def pick_camera(cfg: dict, names: list[str]) -> int:
-    """The saved camera by name if it's connected (numbers shift as cameras come and go)."""
-    if cfg.get("camera_name") in names:
-        return names.index(cfg["camera_name"])
-    index = int(cfg["camera_index"])
-    return index if index < len(names) or not names else 0
-
-
-def list_cameras():
-    for i, name in enumerate(camera_names()):
-        print(f"{i}: {name}")

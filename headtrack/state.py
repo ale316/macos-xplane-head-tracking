@@ -47,14 +47,18 @@ class Shared:
         self.reacquired_time = 0.0
         self.has_ref = False
         self.recentering = False
+        self.hand_at_face = False  # a hand is in front of the face: tracking is steadied / held
+        self.hand_boxes: list = []  # hands seen, normalized (x0, y0, x1, y1), for the preview
         self.raw = np.zeros(6)  # filtered head pose relative to neutral
         self.noise = np.zeros(6)  # measured camera noise per axis (deg / cm)
         self.raw_vel = np.zeros(6)  # velocity of `raw` between the last two frames
         self.raw_time = 0.0  # when `raw` became available
         self.cam_fps = 0.0
         self.cam_info = ""
-        self.cam_index = 0
+        self.cam_target_fps = 0
+        self.cam_id = ""
         self.cam_name = ""
+        self.cam_list: list = []  # CameraInfo of the cameras that can be picked
         self.cam_rotation = 0  # rotation currently applied to camera images
         self.cam_rotation_mode = "auto"
         # settings changed from the preview / hotkeys
