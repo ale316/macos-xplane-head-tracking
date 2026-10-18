@@ -12,13 +12,14 @@ import multiprocessing
 import queue
 import signal
 import textwrap
+import threading
 import time
 from types import SimpleNamespace
 
 import numpy as np
 
 from .config import AXES
-from .macos import app_focused
+from .macos import window_visible
 from .pose import rot_x, rot_y, rot_z
 from .state import Shared
 from .xplane import VIEW_3D_COCKPIT
@@ -164,9 +165,12 @@ class PreviewUI:
         self.menu_open = False  # camera list
         self.menu_items: list[tuple[tuple[int, int, int, int], tuple]] = []
         self.buttons: list[tuple[tuple[int, int, int, int], tuple]] = []
-        self.cockpit = None
+        self.cockpit = None  # built in the background (takes ~0.5 s) so the window responds at once
+        threading.Thread(target=self._build_cockpit, daemon=True, name="cockpit").start()
         self.dirty = True
         self.clicked = False  # user input since the last redraw
+        self.mouse_events, self.input_t = 0, None  # for the --diag performance report
+        self.pending: dict[str, tuple[float, float]] = {}  # slider -> (value sent, until when to trust it)
         self.quit = False
 
     # ---- input
@@ -174,6 +178,9 @@ class PreviewUI:
         import cv2
 
         top = self.controls_top()
+        self.mouse_events += 1
+        if self.input_t is None and (event != cv2.EVENT_MOUSEMOVE or self.drag):
+            self.input_t = time.monotonic()  # to measure how long until it shows on screen
         if event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONUP):
             self.clicked = True
         if event == cv2.EVENT_LBUTTONDOWN and self.menu_open:
@@ -201,10 +208,12 @@ class PreviewUI:
                 frac = abs(x - (SLIDER_X0 + half)) / half
                 self.range = round(min(RANGE_MAX, max(RANGE_MIN, frac * RANGE_MAX)))
                 self.cmd_q.put(("range", self.range, done))
+                self.pending["range"] = (self.range, time.monotonic() + 1.0)
             else:
                 frac = (x - SLIDER_X0) / (SLIDER_X1 - SLIDER_X0)
                 self.smoothing = round(min(100.0, max(0.0, frac * 100)))
                 self.cmd_q.put(("smoothing", self.smoothing, done))
+                self.pending["smooth"] = (self.smoothing, time.monotonic() + 1.0)
             if done:
                 self.drag = None
             self.dirty = True
@@ -235,11 +244,17 @@ class PreviewUI:
         self.dirty = True
 
     def sync(self, st: dict):
-        """Adopt the engine's values unless the user is dragging that slider."""
-        if self.drag != "range":
-            self.range = st["axes"]["yaw"]["output_max"]
-        if self.drag != "smooth":
-            self.smoothing = st["smoothing"]
+        """Adopt the engine's values, except for a slider that's being dragged or whose new value
+        the engine hasn't confirmed yet (older status updates would make it jump back)."""
+        for name, value in (("range", st["axes"]["yaw"]["output_max"]), ("smooth", st["smoothing"])):
+            if self.drag == name:
+                continue
+            sent = self.pending.get(name)
+            if sent is not None:
+                if abs(value - sent[0]) > 0.5 and time.monotonic() < sent[1]:
+                    continue  # the engine hasn't caught up yet: keep showing what was set
+                del self.pending[name]
+            setattr(self, "range" if name == "range" else "smoothing", value)
         self.rotation_mode = st["cam_rotation_mode"]
 
     def controls_top(self) -> int:
@@ -295,12 +310,18 @@ class PreviewUI:
             cv2.putText(area, f"{a:>5} {st['raw'][i]:+6.1f} {units[i]:<3} -> {st['target'][i]:+7.2f}", (x0, y), font,
                         0.42, (200, 200, 200), 1, cv2.LINE_AA)
 
+    def _build_cockpit(self):
+        self.cockpit = CockpitView()
+        self.dirty = True
+
     def draw_sim(self, area, st):
         import cv2
 
         font = cv2.FONT_HERSHEY_SIMPLEX
         if self.cockpit is None:
-            self.cockpit = CockpitView()
+            cv2.putText(area, "Preparing the simulated view...", (20, SIM_H // 2), font, 0.6, (170, 170, 170), 1,
+                        cv2.LINE_AA)
+            return
         out = st["target"] if st is not None else np.zeros(6)
         fov = (st or {}).get("xp_fov") or 75.0
         zoom = min(2.0, max(0.7, 1 + 2 * out[5]))  # leaning in/out (no parallax in this stand-in)
@@ -418,6 +439,25 @@ def accept_first_click():
                                                 signature=b"Z@:@")])
 
 
+def pump_events() -> int:
+    """Handle every waiting window event right away; returns the last key pressed (-1 if none).
+    OpenCV's waitKey() handles one event and then sleeps ~10 ms, so mouse drags queued up and
+    the sliders trailed behind the mouse until macOS started merging the queued events."""
+    from AppKit import NSApplication, NSDefaultRunLoopMode, NSEventMaskAny, NSEventTypeKeyDown
+
+    app, key = NSApplication.sharedApplication(), -1
+    while True:
+        event = app.nextEventMatchingMask_untilDate_inMode_dequeue_(NSEventMaskAny, None, NSDefaultRunLoopMode, True)
+        if event is None:
+            break
+        if event.type() == NSEventTypeKeyDown and event.characters():
+            key = ord(event.characters()[0])  # handled by us, like waitKey() did (no system beep)
+            continue
+        app.sendEvent_(event)
+    app.updateWindows()
+    return key
+
+
 def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):
     """Preview window (separate process): draws engine snapshots, sends user input back."""
     import cv2
@@ -430,8 +470,15 @@ def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):
     cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(win, ui.on_mouse)
     st, frame = None, None
-    last_draw, was_focused = 0.0, None
+    last_draw, was_visible = 0.0, None
+    perf = {"since": time.monotonic(), "redraws": 0, "gap": 0.0, "lag": 0.0}  # reported once a second
+    keys = {ord("c"): ("recenter",), ord(" "): ("recenter",), ord("p"): ("pause",), ord("l"): ("lean",),
+            ord("v"): ("preview",), ord("q"): ("quit",), 27: ("quit",)}
     while (engine is None or engine.is_alive()) and not ui.quit:
+        loop_start = time.monotonic()
+        k = pump_events()  # mouse and keys first, so a drag shows up in this very redraw
+        if k in keys:
+            ui.press(keys[k])
         try:
             while True:  # only the newest snapshot matters
                 st = status_q.get_nowait()
@@ -443,24 +490,28 @@ def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):
                 ui.dirty = True
         except queue.Empty:
             pass
-        focused = app_focused()
-        if focused != was_focused:
-            cmd_q.put(("focus", focused))
-            was_focused = focused
-        # Redraw at ~30 fps while you're looking at the preview, ~5 fps otherwise, and only
-        # on input while it's switched off.
-        interval = 0.0 if focused else 0.2
+        visible = window_visible(win)
+        if visible != was_visible:
+            cmd_q.put(("visible", visible))
+            was_visible = visible
+        # Full rate while the preview is on screen, ~5 fps while it's hidden (e.g. behind a
+        # full-screen X-Plane), and only on input while it's switched off.
+        interval = 0.0 if visible else 0.2
         due = ui.dirty if not ui.preview_on else time.monotonic() - last_draw >= interval
         if not (due or ui.clicked or ui.drag):  # clicks always get an immediate redraw
-            cv2.waitKey(30)
+            time.sleep(0.02)
             continue
-        last_draw, ui.dirty, ui.clicked = time.monotonic(), False, False
+        now = time.monotonic()
+        perf["gap"] = max(perf["gap"], now - last_draw) if perf["redraws"] else 0.0
+        last_draw, ui.dirty, ui.clicked = now, False, False
         cv2.imshow(win, ui.draw(st, frame))
-        k = cv2.waitKey(16) & 0xFF
-        keys = {ord("c"): ("recenter",), ord(" "): ("recenter",), ord("p"): ("pause",), ord("l"): ("lean",),
-                ord("v"): ("preview",)}
-        if k in keys:
-            ui.press(keys[k])
-        elif k in (ord("q"), 27):
-            ui.press(("quit",))
+        perf["redraws"] += 1
+        if ui.input_t is not None:  # input -> on screen
+            perf["lag"], ui.input_t = max(perf["lag"], time.monotonic() - ui.input_t), None
+        if now - perf["since"] >= 1.0:  # redraws/s, slowest gap and input lag (ms), visible, mouse events
+            cmd_q.put(("perf", perf["redraws"], perf["gap"] * 1000, perf["lag"] * 1000, float(visible),
+                       ui.mouse_events))
+            perf.update(since=now, redraws=0, gap=0.0, lag=0.0)
+            ui.mouse_events = 0
+        time.sleep(max(0.0, 1 / 60 - (time.monotonic() - loop_start)))  # up to 60 redraws a second
     cv2.destroyAllWindows()

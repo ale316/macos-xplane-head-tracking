@@ -13,7 +13,7 @@ _diag = None  # (file, lock) when running with --diag
 def enable_diag(path: Path):
     global _diag
     _diag = (open(path, "w", buffering=1 << 16), threading.Lock())
-    _diag[0].write("kind,t,a,b,c\n")
+    _diag[0].write("kind,t,values...\n")
 
 
 def close_diag():
@@ -23,12 +23,12 @@ def close_diag():
         _diag = None
 
 
-def diag(kind: str, a: float = 0.0, b: float = 0.0, c: float = 0.0):
-    """Append a timing event (time.monotonic() clock) to the --diag CSV, if enabled."""
+def diag(kind: str, *values: float):
+    """Append an event (time.monotonic() clock) and its values to the --diag CSV, if enabled."""
     if _diag:
         f, lock = _diag
         with lock:
-            f.write(f"{kind},{time.monotonic():.5f},{a:.5f},{b:.5f},{c:.5f}\n")
+            f.write(f"{kind},{time.monotonic():.5f}," + ",".join(f"{v:.5f}" for v in values) + "\n")
 
 
 class Shared:
@@ -64,7 +64,7 @@ class Shared:
         # settings changed from the preview / hotkeys
         self.lean = True
         self.smoothing = 40.0  # 0-100
-        self.preview_focused = False
+        self.preview_visible = True
         self.preview_on = True
         # written by the X-Plane link
         self.target = np.zeros(6)  # view offset sent on top of X-Plane's own head position

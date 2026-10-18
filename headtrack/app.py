@@ -32,8 +32,8 @@ def run_engine(sh: Shared, cfg: dict, status_q, preview):
             n += 1
             if not sh.preview_on and n % 10:
                 continue  # preview off: just a 2 Hz status heartbeat, no video
-            # full-rate video only while you're looking at the preview
-            st = snapshot(sh, cfg, with_frame=sh.preview_on and (sh.preview_focused or n % 4 == 0))
+            # full-rate video only while the preview is on screen
+            st = snapshot(sh, cfg, with_frame=sh.preview_on and (sh.preview_visible or n % 4 == 0))
             try:
                 status_q.put_nowait(st)
             except queue.Full:
@@ -172,9 +172,11 @@ def main() -> int:
                 with sh.lock:
                     sh.quit = True
                 return
-            if cmd == "focus":
-                sh.preview_focused = arg[0]
-                diag("focus", float(arg[0]))
+            if cmd == "visible":
+                sh.preview_visible = arg[0]
+                diag("visible", float(arg[0]))
+            elif cmd == "perf":
+                diag("preview", *arg)
             elif cmd == "range":
                 set_range(*arg)
             elif cmd == "smoothing":

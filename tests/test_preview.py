@@ -49,6 +49,21 @@ def test_clicks_ask_for_an_immediate_redraw():
     assert ui.clicked and ui.cmd_q[-1] == ("recenter",)
 
 
+def test_released_slider_does_not_jump_back_to_an_older_value():
+    ui = make_ui()
+    y = ui.controls_top() + 28
+    mid, half = (SLIDER_X0 + SLIDER_X1) / 2, (SLIDER_X1 - SLIDER_X0) / 2
+    click(ui, mid + half / 2, y)  # set +/-90
+    st = {"axes": {"yaw": {"output_max": 150.0}}, "smoothing": 40.0, "cam_rotation_mode": "auto"}
+    ui.sync(st)  # an update sent before the engine got the new value
+    assert ui.range == 90
+    st["axes"]["yaw"]["output_max"] = 90.0
+    ui.sync(st)  # confirmed
+    st["axes"]["yaw"]["output_max"] = 120.0
+    ui.sync(st)  # changed elsewhere later: follow it again
+    assert ui.range == 120
+
+
 def test_smoothness_slider():
     ui = make_ui()
     ui.on_mouse(cv2.EVENT_LBUTTONDOWN, SLIDER_X1, ui.controls_top() + 68, 0, None)

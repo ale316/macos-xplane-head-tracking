@@ -1,4 +1,4 @@
-"""macOS integration: App Nap and thread priority, global hotkeys, sounds, window focus."""
+"""macOS integration: App Nap and thread priority, global hotkeys, sounds, window visibility."""
 from __future__ import annotations
 
 import ctypes
@@ -122,9 +122,14 @@ def start_global_hotkeys(bindings: dict[str, str], actions: dict) -> str:
     return "global hotkeys: " + ", ".join(f"{a}={c}" for a, c in bindings.items())
 
 
-def app_focused() -> bool:
+def window_visible(title: str) -> bool:
+    """Is any part of this app's window with this title showing on screen (not minimized, or
+    covered by e.g. a full-screen X-Plane)?"""
     try:
-        from AppKit import NSApplication
+        from AppKit import NSApplication, NSWindowOcclusionStateVisible
     except ImportError:
         return True
-    return bool(NSApplication.sharedApplication().isActive())
+    for window in NSApplication.sharedApplication().windows():
+        if window.title() == title:
+            return bool(window.occlusionState() & NSWindowOcclusionStateVisible)
+    return True
