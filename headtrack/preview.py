@@ -166,6 +166,7 @@ class PreviewUI:
         self.buttons: list[tuple[tuple[int, int, int, int], tuple]] = []
         self.cockpit = None
         self.dirty = True
+        self.clicked = False  # user input since the last redraw
         self.quit = False
 
     # ---- input
@@ -173,6 +174,8 @@ class PreviewUI:
         import cv2
 
         top = self.controls_top()
+        if event in (cv2.EVENT_LBUTTONDOWN, cv2.EVENT_LBUTTONUP):
+            self.clicked = True
         if event == cv2.EVENT_LBUTTONDOWN and self.menu_open:
             self.menu_open, self.dirty = False, True
             for (x0, y0, x1, y1), cmd in self.menu_items:
@@ -398,6 +401,23 @@ class PreviewUI:
         return rect[2]
 
 
+def accept_first_click():
+    """macOS normally swallows the first click on a window that isn't in front, so clicking a
+    button while X-Plane had focus needed a second click. This process only has the preview
+    window, so opting all its views in is safe."""
+    try:
+        import objc
+        from AppKit import NSView
+    except ImportError:
+        return
+
+    def acceptsFirstMouse_(self, _event):
+        return True
+
+    objc.classAddMethods(NSView, [objc.selector(acceptsFirstMouse_, selector=b"acceptsFirstMouse:",
+                                                signature=b"Z@:@")])
+
+
 def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):
     """Preview window (separate process): draws engine snapshots, sends user input back."""
     import cv2
@@ -405,6 +425,7 @@ def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):
     signal.signal(signal.SIGINT, signal.SIG_IGN)  # Ctrl+C goes to the engine, which closes us
     engine = multiprocessing.parent_process()
     ui = PreviewUI(cfg, cmd_q, hotkey_status)
+    accept_first_click()
     win = "X-Plane Head Tracker"
     cv2.namedWindow(win, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(win, ui.on_mouse)
@@ -429,10 +450,11 @@ def preview_process(cfg: dict, status_q, cmd_q, hotkey_status: str):
         # Redraw at ~30 fps while you're looking at the preview, ~5 fps otherwise, and only
         # on input while it's switched off.
         interval = 0.0 if focused else 0.2
-        if (not ui.dirty if not ui.preview_on else time.monotonic() - last_draw < interval) and not ui.drag:
+        due = ui.dirty if not ui.preview_on else time.monotonic() - last_draw >= interval
+        if not (due or ui.clicked or ui.drag):  # clicks always get an immediate redraw
             cv2.waitKey(30)
             continue
-        last_draw, ui.dirty = time.monotonic(), False
+        last_draw, ui.dirty, ui.clicked = time.monotonic(), False, False
         cv2.imshow(win, ui.draw(st, frame))
         k = cv2.waitKey(16) & 0xFF
         keys = {ord("c"): ("recenter",), ord(" "): ("recenter",), ord("p"): ("pause",), ord("l"): ("lean",),

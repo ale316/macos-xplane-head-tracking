@@ -42,6 +42,13 @@ def test_range_slider_handles_are_symmetric_and_save_on_release():
     assert ui.cmd_q[-1] == ("range", ui.range, True)
 
 
+def test_clicks_ask_for_an_immediate_redraw():
+    ui = make_ui()
+    ui.clicked = False
+    press(ui, ("recenter",))
+    assert ui.clicked and ui.cmd_q[-1] == ("recenter",)
+
+
 def test_smoothness_slider():
     ui = make_ui()
     ui.on_mouse(cv2.EVENT_LBUTTONDOWN, SLIDER_X1, ui.controls_top() + 68, 0, None)
