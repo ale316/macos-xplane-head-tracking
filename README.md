@@ -49,4 +49,4 @@ Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) explain
 
 ## License
 
-Free for personal and other non-commercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE); for commercial use, please get in touch. Built on [MediaPipe](https://github.com/google-ai-edge/mediapipe), OpenCV and PyObjC. Not affiliated with Laminar Research.
+Free for personal and other non-commercial use under the [PolyForm Noncommercial License 1.0.0](LICENSE). Built on [MediaPipe](https://github.com/google-ai-edge/mediapipe), OpenCV and PyObjC. Not affiliated with Laminar Research.
