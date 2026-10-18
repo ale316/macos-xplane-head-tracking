@@ -107,18 +107,35 @@ class AdaptiveFilter:
         return self.y.copy()
 
 
-def fill_gap(raw: np.ndarray, vel: np.ndarray, age: float) -> np.ndarray:
+def fill_gap(raw: np.ndarray, vel: np.ndarray, age: float, amount: float = 1.0) -> np.ndarray:
     """Advance the latest filtered pose by its velocity to now, at most about one frame."""
-    return raw + vel * min(max(age, 0.0), 0.04)
+    return raw + vel * min(max(age, 0.0), 0.04) * amount
 
 
 def map_pose(cfg: dict, raw: np.ndarray, lean_gain: float) -> np.ndarray:
     """Head pose (deg / cm) -> in-sim view offset (deg / m) through each axis' curve."""
     out = np.array([apply_curve(raw[i], cfg["axes"][a]) for i, a in enumerate(AXES)])
     out[3:] *= lean_gain
+    out[5] = max(out[5], -cfg["lean_back_max_m"])  # leaning back puts the eye inside the seat
     return out
 
 
 def smoothing_k(pct: float) -> float:
-    """Smoothing (0-100) -> AdaptiveFilter threshold, in multiples of the measured camera noise."""
+    """Smoothing (0-100) -> AdaptiveFilter threshold, in multiples of the measured camera noise.
+    Kept moderate: a higher threshold would swallow small real head movements (the view would
+    stop short), so the top of the scale gets its extra smoothness from smoothing_ease()."""
     return 1.5 + 6.5 * min(100.0, max(0.0, pct)) / 100.0
+
+
+def smoothing_ease(base_s: float, pct: float) -> float:
+    """Final output easing time (s) for a smoothing setting: base_s normally, rising to 0.3 s
+    at the top of the scale, where most of the extra smoothness comes from (it delays, but
+    always arrives)."""
+    p = min(100.0, max(0.0, pct)) / 100.0
+    return base_s + max(0.0, 0.3 - base_s) * p ** 4
+
+
+def smoothing_fill(pct: float) -> float:
+    """How much of the between-frames motion prediction to use: less as smoothing goes up."""
+    p = min(100.0, max(0.0, pct)) / 100.0
+    return 1.0 - p ** 4

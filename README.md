@@ -55,7 +55,7 @@ If you'd rather not paste a command, download this repository instead (green **C
 | Quit | **Quit** button or `Q` | `Ctrl+C` in Terminal |
 
 - **Look range:** how far the view turns when your head is fully turned. Both handles move together; ±90° means a full turn looks straight out the side window.
-- **Smoothness:** from snappy to steady.
+- **Smoothness:** from snappy to steady. Towards the top it also makes the view glide, rather than snap, to where you look.
 - **Camera:** pick a camera from the list. It's remembered, and found again next time. Cameras that can't be used right now (e.g. the built-in one with the lid closed) aren't listed.
 - **Rotation:** detects when the camera is turned sideways or upside down; click it to force 0/90/180/270°.
 
@@ -68,6 +68,7 @@ The global hotkeys need **Input Monitoring** permission for Terminal (System Set
 - **Light your face evenly from the front.** Dim light makes the camera noisier and slower, which you'll feel as jitter and lag.
 - **An iPhone runs at 60 fps** instead of the built-in camera's 30, which noticeably cuts lag.
 - **Switch the preview off while you fly** to save CPU. Tracking keeps running at full speed either way.
+- **Leaning back** is limited to a few centimetres, so the view never ends up inside the seat. Leaning forward, e.g. to read an instrument, isn't limited.
 - **Hands at your face** (touching your face, drinking, rubbing your eyes) don't throw the view around. While a hand overlaps your face, tracking keeps following you but is steadied, so the sudden jumps a hand causes are smoothed out. The preview marks hands it sees with a box.
 - **A new flight or aircraft** starts looking straight ahead from that aircraft's eye point.
 - The tracker only moves the view in X-Plane's 3D cockpit; outside views are left alone.
@@ -91,6 +92,7 @@ The global hotkeys need **Input Monitoring** permission for Terminal (System Set
 | `camera_rotation` | `"auto"` | `"auto"` or a fixed rotation: `0`, `90`, `180`, `270` |
 | `smoothing` | `40` | Smoothness slider, 0–100 |
 | `lean_enabled` | `true` | Start with leaning on |
+| `lean_back_max_m` | `0.03` | How far the view may move back from the seat (meters) |
 | `hand_at_face` | `"follow"` | With a hand at your face: `"follow"` (steadied), `"hold"` (freeze the view) or `"off"` |
 | `axes.<axis>.input_max` | yaw 35, pitch 25 | Head movement (degrees or cm) that gives full output |
 | `axes.<axis>.output_max` | yaw 150, pitch 60 | Full output in X-Plane (degrees or meters); yaw is the Look range slider |

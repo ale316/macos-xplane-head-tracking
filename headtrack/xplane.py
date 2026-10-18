@@ -17,7 +17,7 @@ import numpy as np
 
 from .config import AXES
 from .macos import set_thread_interactive
-from .pose import fill_gap, map_pose
+from .pose import fill_gap, map_pose, smoothing_ease, smoothing_fill
 from .state import Shared, diag
 
 
@@ -183,8 +183,9 @@ class XPlaneLink(threading.Thread):
                 quitting, paused = sh.quit, sh.paused
                 has_ref, face_ok, reacquired, lean = sh.has_ref, sh.face_ok, sh.reacquired_time, sh.lean
                 raw, vel, raw_time = sh.raw.copy(), sh.raw_vel.copy(), sh.raw_time
+                smoothing = sh.smoothing
             if cfg["fill_between_frames"]:
-                raw = fill_gap(raw, vel, now - raw_time)
+                raw = fill_gap(raw, vel, now - raw_time, smoothing_fill(smoothing))
 
             # Leaning fades in/out over ~0.25 s when toggled instead of jumping.
             self.lean_gain += ((1.0 if lean else 0.0) - self.lean_gain) * (1.0 - math.exp(-dt / 0.25))
@@ -229,7 +230,7 @@ class XPlaneLink(threading.Thread):
             out = None
             if active:
                 slow = (not face_ok) or (now - reacquired < 0.5)
-                tau = cfg["face_lost_smoothing_s"] if slow else cfg["output_smoothing_s"]
+                tau = cfg["face_lost_smoothing_s"] if slow else smoothing_ease(cfg["output_smoothing_s"], smoothing)
                 self.smoothed += (target - self.smoothed) * (1.0 - math.exp(-dt / max(tau, 1e-3)))
                 out = self.base + self.smoothed * XPLANE_SIGN
                 self._write_pose(out)

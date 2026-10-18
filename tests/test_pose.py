@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 
 from headtrack.config import DEFAULT_CONFIG
-from headtrack.pose import (AdaptiveFilter, apply_curve, euler_yxz, fill_gap, head_delta, rot_x, rot_y, rot_z,
-                            smoothing_k)
+from headtrack.pose import (AdaptiveFilter, apply_curve, euler_yxz, fill_gap, head_delta, map_pose, rot_x, rot_y,
+                            rot_z, smoothing_ease, smoothing_fill, smoothing_k)
 
 
 def test_euler_round_trip():
@@ -60,6 +60,14 @@ def test_filter_follows_real_motion():
 
 def test_smoothing_scale():
     assert smoothing_k(0) < smoothing_k(40) < smoothing_k(100) == smoothing_k(150)
+    # the top of the slider adds slower, smoother easing and less prediction; the default barely changes
+    assert smoothing_ease(0.03, 0) == 0.03 and smoothing_ease(0.03, 40) < 0.04 and smoothing_ease(0.03, 100) == pytest.approx(0.3)
+    assert smoothing_fill(0) == 1.0 and smoothing_fill(40) > 0.95 and smoothing_fill(100) == 0.0
+
+
+def test_leaning_back_is_capped_forward_is_not():
+    assert map_pose(DEFAULT_CONFIG, np.array([0, 0, 0, 0, 0, -10.0]), 1.0)[5] == -DEFAULT_CONFIG["lean_back_max_m"]
+    assert map_pose(DEFAULT_CONFIG, np.array([0, 0, 0, 0, 0, 10.0]), 1.0)[5] > 0.2
 
 
 def test_gap_fill_advances_but_not_past_one_frame():

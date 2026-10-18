@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "fill_between_frames": True,
     # Leaning (x/y/z translation) on at startup; toggle at runtime with the lean hotkey / L.
     "lean_enabled": True,
+    "lean_back_max_m": 0.03,  # leaning back further would put the eye inside the seat
     # When the face is lost, the view eases back to center after this long.
     "face_lost_timeout_s": 1.5,
     "face_lost_smoothing_s": 0.8,
