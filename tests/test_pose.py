@@ -3,7 +3,9 @@ import pytest
 
 from headtrack.config import DEFAULT_CONFIG
 from headtrack.pose import (
+    TOP_EASE_S,
     AdaptiveFilter,
+    Ease,
     apply_curve,
     euler_yxz,
     fill_gap,
@@ -72,10 +74,31 @@ def test_filter_follows_real_motion():
 
 def test_smoothing_scale():
     assert smoothing_k(0) < smoothing_k(40) < smoothing_k(100) == smoothing_k(150)
-    # the top of the slider adds slower, smoother easing and less prediction; the default barely changes
-    assert smoothing_ease(0.03, 0) == 0.03 and smoothing_ease(0.03, 40) < 0.04
-    assert smoothing_ease(0.03, 100) == pytest.approx(0.3)
+    # the top of the slider adds a second easing stage and less prediction; the default barely changes
+    assert smoothing_ease(0.03, 0) == (0.03, 0.0)
+    first, second = smoothing_ease(0.03, 40)
+    assert first < 0.035 and second < 0.005
+    assert smoothing_ease(0.03, 100) == pytest.approx((TOP_EASE_S, TOP_EASE_S))
     assert smoothing_fill(0) == 1.0 and smoothing_fill(40) > 0.95 and smoothing_fill(100) == 0.0
+
+
+def step_response(taus, seconds=1.5, dt=1 / 60):
+    ease = Ease(1)
+    return np.array([ease(np.ones(1), dt, taus)[0] for _ in range(int(seconds / dt))])
+
+
+def test_easing_at_the_default_is_a_single_quick_lag():
+    y = step_response(smoothing_ease(0.03, 40))
+    assert y[0] > 0.3 and y[9] > 0.99  # well on its way in the first frame, there within 0.15 s
+
+
+def test_easing_at_the_top_starts_gently_and_leaves_no_slow_tail():
+    two = step_response(smoothing_ease(0.03, 100))
+    one = step_response((2 * TOP_EASE_S, 0.0))  # one lag with the same delay
+    speed_two, speed_one = np.diff(two, prepend=0), np.diff(one, prepend=0)
+    assert np.argmax(speed_two) >= 4  # speeds up gradually over a few frames instead of jumping
+    assert speed_one[0] == speed_one.max()
+    assert np.argmax(two > 0.98) < np.argmax(one > 0.98)  # and arrives sooner
 
 
 def test_leaning_back_is_capped_forward_is_not():

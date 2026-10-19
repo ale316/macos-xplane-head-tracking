@@ -18,7 +18,7 @@ import numpy as np
 
 from .config import AXES
 from .macos import set_thread_interactive
-from .pose import fill_gap, map_pose, smoothing_ease, smoothing_fill
+from .pose import Ease, fill_gap, map_pose, smoothing_ease, smoothing_fill
 from .state import Shared, diag
 
 DATAREFS = {
@@ -128,7 +128,7 @@ class XPlaneLink(threading.Thread):
         self.base: np.ndarray | None = None
         self.prev_base: np.ndarray | None = None
         self.prev_out: np.ndarray | None = None
-        self.smoothed = np.zeros(6)
+        self.ease = Ease()  # the view offset sent on top of the base
         self.lean_gain = 1.0 if cfg["lean_enabled"] else 0.0
         self.was_active = False
 
@@ -200,7 +200,7 @@ class XPlaneLink(threading.Thread):
             self.base = np.array([0.0, pitch, 0.0, *captured[3:]])
         if self.eye.point is not None:
             self.base[3:] = self.eye.point  # the seat position from the aircraft file
-        self.smoothed = np.zeros(6)
+        self.ease.reset(np.zeros(6))
 
     def run(self):
         cfg, sh = self.cfg, self.shared
@@ -243,9 +243,10 @@ class XPlaneLink(threading.Thread):
 
             if active:
                 slow = (not face_ok) or (now - reacquired < 0.5)
-                tau = cfg["face_lost_smoothing_s"] if slow else smoothing_ease(cfg["output_smoothing_s"], smoothing)
-                self.smoothed += (target - self.smoothed) * (1.0 - math.exp(-dt / max(tau, 1e-3)))
-                out = self.base + self.smoothed * XPLANE_SIGN
+                taus = smoothing_ease(cfg["output_smoothing_s"], smoothing)
+                if slow:
+                    taus = (cfg["face_lost_smoothing_s"], taus[1])
+                out = self.base + self.ease(target, dt, taus) * XPLANE_SIGN
                 self._write_pose(out)
                 self.prev_base, self.prev_out = self.base, out
             elif self.was_active:

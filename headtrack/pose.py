@@ -125,16 +125,36 @@ def map_pose(cfg: dict, raw: np.ndarray, lean_gain: float) -> np.ndarray:
 def smoothing_k(pct: float) -> float:
     """Smoothing (0-100) -> AdaptiveFilter threshold, in multiples of the measured camera noise.
     Kept moderate: a higher threshold would swallow small real head movements (the view would
-    stop short), so the top of the scale gets its extra smoothness from smoothing_ease()."""
-    return 1.5 + 6.5 * min(100.0, max(0.0, pct)) / 100.0
-
-
-def smoothing_ease(base_s: float, pct: float) -> float:
-    """Final output easing time (s) for a smoothing setting: base_s normally, rising to 0.3 s
-    at the top of the scale, where most of the extra smoothness comes from (it delays, but
-    always arrives)."""
+    stop short), so the top of the scale also gets smoothness from smoothing_ease()."""
     p = min(100.0, max(0.0, pct)) / 100.0
-    return base_s + max(0.0, 0.3 - base_s) * p ** 4
+    return 1.5 + 6.5 * p + 4.0 * p ** 4
+
+
+TOP_EASE_S = 0.11  # each easing stage at the top of the scale; longer leaves a slow tail after turns
+
+
+def smoothing_ease(base_s: float, pct: float) -> tuple[float, float]:
+    """The two output easing times (s) for a smoothing setting (see Ease): base_s and nothing
+    for most of the scale, rising to two stages of TOP_EASE_S at the top."""
+    p4 = (min(100.0, max(0.0, pct)) / 100.0) ** 4
+    return base_s + max(0.0, TOP_EASE_S - base_s) * p4, TOP_EASE_S * p4
+
+
+class Ease:
+    """Final easing of the view: two first-order lags in a row. Compared with one longer lag,
+    the view's speed changes gradually instead of jumping with every camera frame, and it
+    doesn't keep creeping long after the head has stopped (both feel floaty or shaky)."""
+
+    def __init__(self, n: int = 6):
+        self.first, self.out = np.zeros(n), np.zeros(n)
+
+    def reset(self, value: np.ndarray):
+        self.first, self.out = value.copy(), value.copy()
+
+    def __call__(self, target: np.ndarray, dt: float, taus: tuple[float, float]) -> np.ndarray:
+        self.first += (target - self.first) * (1.0 - math.exp(-dt / max(taus[0], 1e-3)))
+        self.out += (self.first - self.out) * (1.0 - math.exp(-dt / max(taus[1], 1e-3)))
+        return self.out.copy()
 
 
 def smoothing_fill(pct: float) -> float:
