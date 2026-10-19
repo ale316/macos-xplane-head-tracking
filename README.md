@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/ale316/macos-xplane-head-tracking/actions/workflows/tests.yml/badge.svg)](https://github.com/ale316/macos-xplane-head-tracking/actions/workflows/tests.yml)
 
-Free head tracking for X-Plane 12 using your Mac's camera or your iPhone. Turn your head and the cockpit view follows. No IR clip, no plugin, and the video never leaves your Mac.
+Free head tracking for X-Plane 12 using your AirPods, your Mac's camera or your iPhone. Turn your head and the cockpit view follows. No IR clip, no plugin, and the video never leaves your Mac.
 
 Requires a Mac with Apple Silicon (M1 or newer) and macOS 14 or newer.
 
@@ -39,6 +39,7 @@ While flying, the hotkeys `Ctrl+Shift+C` (recenter), `Ctrl+Shift+P` (pause) and 
 
 ## Tips
 
+- **AirPods with head tracking** are the nicest way to look around: almost no lag, and nothing to set up in front of you. Tick them in the camera menu, and switch Lean off if you don't need the camera at all.
 - **Even, frontal light** gives the steadiest tracking.
 - **An iPhone** (via Continuity Camera) runs at 60 fps and feels snappier than the built-in camera. It needs to be locked, mounted and near the Mac.
 - **X-Plane not connecting?** Make sure its UDP receive port is 49000 (Settings › Network).
