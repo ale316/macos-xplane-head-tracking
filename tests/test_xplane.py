@@ -213,3 +213,37 @@ def test_new_flight_retakes_the_seat_without_aircraft_file(monkeypatch):
     time.sleep(1.2)
     assert xp["x"] == pytest.approx(0.7, abs=0.01)
     stop(xp, sh, link)
+
+
+def test_airpods_turn_the_view_while_the_camera_lost_the_face(monkeypatch):
+    xp, sh, link = start(monkeypatch, None)  # the camera says yaw 30
+    with sh.lock:  # a time ahead: samples keep arriving
+        sh.airpods_rot, sh.airpods_time = np.array([50.0, 10.0, 0.0]), time.monotonic() + 100
+    time.sleep(1.0)  # eased over from the camera's rotation
+    assert xp["yaw"] == pytest.approx(50.0, abs=0.5)
+    with sh.lock:
+        sh.face_ok = False  # e.g. looking far to the side
+        sh.airpods_rot = np.array([90.0, 10.0, 0.0])
+    time.sleep(0.25)
+    assert xp["yaw"] == pytest.approx(90.0, abs=1.0)  # straight away, not eased like a lost face
+    with sh.lock:
+        sh.face_ok, sh.airpods_rot = True, None  # AirPods out: back to the camera, gently
+    time.sleep(0.15)
+    assert 60.0 < xp["yaw"] < 85.0
+    time.sleep(1.0)
+    assert xp["yaw"] == pytest.approx(30.0, abs=0.5)
+    stop(xp, sh, link)
+
+
+def test_view_holds_when_the_airpods_go_out_and_the_face_is_not_seen(monkeypatch):
+    xp, sh, link = start(monkeypatch, None)  # the camera says yaw 30
+    with sh.lock:
+        sh.airpods_rot, sh.airpods_time = np.array([60.0, 0.0, 0.0]), time.monotonic() + 100
+    time.sleep(1.0)
+    with sh.lock:  # out of the ears, with the camera off (or not seeing the face)
+        sh.airpods_time, sh.face_ok = time.monotonic(), False
+    time.sleep(1.0)
+    assert xp["yaw"] == pytest.approx(60.0, abs=0.5)  # held, not eased back to the camera's
+    time.sleep(1.5)
+    assert xp["yaw"] < 50.0  # until the face-lost timeout
+    stop(xp, sh, link)

@@ -148,3 +148,16 @@ def test_status_explains_what_is_going_on():
     sh.error = "x" * 500
     lines = status_lines(sh, DEFAULT_CONFIG)
     assert len(lines) == 3 and lines[-1].endswith("(see terminal)")
+
+
+def test_camera_menu_switches_airpods_on_and_off():
+    ui = make_ui()
+    st = {"cam_names": ["FaceTime HD Camera"], "cam_index": 0, "cam_name": "FaceTime HD Camera",
+          "cam_rotation": 0, "cam_rotation_mode": "auto", "paused": False, "lean": True, "airpods_status": ""}
+    for status, sent in (("", ("airpods", True)), ("on", ("airpods", False))):
+        st["airpods_status"] = status
+        press(ui, ("camera_menu",))
+        ui.draw_controls(np.zeros((ui.controls_top() + CTRL_H, UI_W, 3), np.uint8), ui.controls_top(), st)
+        (x0, y0, x1, y1), cmd = ui.menu_items[-1]
+        click(ui, (x0 + x1) / 2, (y0 + y1) / 2)
+        assert ui.cmd_q[-1] == sent and not ui.menu_open

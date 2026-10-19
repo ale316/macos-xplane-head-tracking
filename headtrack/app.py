@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .airpods import HeadphoneMotion
 from .camera import camera_to_use, list_cameras, pick_camera
 from .config import CONFIG_PATH, MODEL_PATH, ConfigError, load_config, save_settings, set_look_range
 from .macos import disable_app_nap, play_sound, set_thread_interactive, start_global_hotkeys
@@ -28,6 +29,7 @@ class Controls:
         self.cfg, self.sh, self.tracker, self.config_path = cfg, sh, tracker, config_path
         self.hotkey_actions = {"recenter": tracker.request_recenter, "pause": self.toggle_pause,
                                "lean": self.toggle_lean}
+        self.airpods: HeadphoneMotion | None = None
 
     def handle(self, cmd: str, *args):
         """One command from the preview, e.g. ("range", 90, True)."""
@@ -39,6 +41,7 @@ class Controls:
             "camera": self.select_camera,  # (index in the camera list,)
             "cameras": self.refresh_cameras,
             "rotation": self.set_rotation,  # ("auto" or 0/90/180/270,)
+            "airpods": self.set_airpods,  # (on,)
             "preview": self.set_preview,  # (on,)
             "visible": self.set_preview_visible,  # (on screen,)
             "perf": lambda *perf: diag("preview", *perf),
@@ -87,6 +90,19 @@ class Controls:
         self.cfg["camera_rotation"] = mode
         save_settings(self.config_path, self.cfg)
         print(f"camera rotation: {mode} (saved)", flush=True)
+
+    def set_airpods(self, on: bool):
+        """Turn the view with AirPods head tracking (on) or with the camera."""
+        if on and self.airpods is None:
+            self.airpods = HeadphoneMotion(self.sh)
+            self.airpods.start()
+        elif not on and self.airpods is not None:
+            self.airpods.stop()
+            self.airpods = None
+        if self.cfg["airpods"] != on:
+            self.cfg["airpods"] = on
+            save_settings(self.config_path, self.cfg)
+            print(f"AirPods head tracking {'on' if on else 'off'} (saved)", flush=True)
 
     def set_preview(self, on: bool):
         self.sh.preview_on = on
@@ -217,6 +233,7 @@ def main() -> int:
 
     tracker.start()
     link.start()
+    controls.set_airpods(cfg["airpods"])
     threading.Thread(target=controls.watch_cameras, daemon=True, name="cameras").start()
     try:
         run_engine(sh, cfg, status_q, preview)

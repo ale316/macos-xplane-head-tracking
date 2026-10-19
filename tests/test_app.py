@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from headtrack import app
 from headtrack.app import Controls
 from headtrack.camera import CameraInfo
 from headtrack.config import DEFAULT_CONFIG
@@ -70,3 +71,21 @@ def test_serves_commands_until_quit(controls):
         q.put(cmd)
     controls.serve(q)
     assert controls.sh.quit and controls.sh.paused and controls.sh.lean  # nothing after quit
+
+
+def test_airpods_switch_on_and_off_and_are_remembered(controls, monkeypatch):
+    class FakeMotion:
+        def __init__(self, sh):
+            self.running = False
+        def start(self):
+            self.running = True
+        def stop(self):
+            self.running = False
+    monkeypatch.setattr(app, "HeadphoneMotion", FakeMotion)
+    controls.handle("airpods", True)
+    reader = controls.airpods
+    assert reader.running and saved(controls)["airpods"] is True
+    controls.handle("airpods", True)  # already on
+    assert controls.airpods is reader
+    controls.handle("airpods", False)
+    assert not reader.running and controls.airpods is None and saved(controls)["airpods"] is False

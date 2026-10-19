@@ -3,5 +3,6 @@ opencv-contrib-python==5.0.0.93
 numpy>=1.26
 pyobjc-framework-AVFoundation==12.2.2
 pyobjc-framework-Cocoa==12.2.2
+pyobjc-framework-CoreMotion==12.2.2
 pyobjc-framework-Quartz==12.2.2
 pyobjc-framework-libdispatch==12.2.2

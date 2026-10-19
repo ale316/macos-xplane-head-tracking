@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .airpods import STALE_S as AIRPODS_STALE_S
 from .config import AXES
 from .macos import set_thread_interactive
 from .pose import Ease, fill_gap, map_pose, smoothing_ease, smoothing_fill
@@ -131,6 +132,8 @@ class XPlaneLink(threading.Thread):
         self.ease = Ease()  # the view offset sent on top of the base
         self.lean_gain = 1.0 if cfg["lean_enabled"] else 0.0
         self.was_active = False
+        self.airpods = False  # rotation is coming from the AirPods
+        self.rot_switched = 0.0  # when rotation last switched between AirPods and camera
 
     def _send(self, data: bytes):
         try:
@@ -222,8 +225,16 @@ class XPlaneLink(threading.Thread):
                 has_ref, face_ok, reacquired, lean = sh.has_ref, sh.face_ok, sh.reacquired_time, sh.lean
                 raw, vel, raw_time = sh.raw.copy(), sh.raw_vel.copy(), sh.raw_time
                 smoothing = sh.smoothing
+                airpods_rot, airpods_vel, airpods_time = sh.airpods_rot, sh.airpods_vel, sh.airpods_time
             if cfg["fill_between_frames"]:
                 raw = fill_gap(raw, vel, now - raw_time, smoothing_fill(smoothing))
+            airpods = airpods_rot is not None and now - airpods_time < AIRPODS_STALE_S
+            if airpods:  # continued with the gyros' own rate between samples
+                raw[:3] = fill_gap(airpods_rot, airpods_vel, now - airpods_time)
+            elif airpods_rot is not None and not face_ok and now - airpods_time < cfg["face_lost_timeout_s"]:
+                raw[:3] = airpods_rot  # they just went out, and the camera can't see the face (yet): hold
+            if airpods != self.airpods:
+                self.airpods, self.rot_switched = airpods, now
 
             # Leaning fades in/out over ~0.25 s when toggled instead of jumping.
             self.lean_gain += ((1.0 if lean else 0.0) - self.lean_gain) * (1.0 - math.exp(-dt / 0.25))
@@ -242,10 +253,14 @@ class XPlaneLink(threading.Thread):
             active = want_active and self.base is not None
 
             if active:
-                slow = (not face_ok) or (now - reacquired < 0.5)
+                # Ease over slowly where the camera lost or found the face, or rotation changed source.
+                slow = np.full(6, (not face_ok) or (now - reacquired < 0.5))
+                if self.airpods:
+                    slow[:3] = False
+                if now - self.rot_switched < 0.5:
+                    slow[:3] = True
                 taus = smoothing_ease(cfg["output_smoothing_s"], smoothing)
-                if slow:
-                    taus = (cfg["face_lost_smoothing_s"], taus[1])
+                taus = (np.where(slow, cfg["face_lost_smoothing_s"], taus[0]), taus[1])
                 out = self.base + self.ease(target, dt, taus) * XPLANE_SIGN
                 self._write_pose(out)
                 self.prev_base, self.prev_out = self.base, out

@@ -10,7 +10,7 @@ import numpy as np
 
 from .camera import Camera, CameraInfo, camera_access
 from .config import HAND_MODEL_PATH, MODEL_PATH
-from .macos import play_sound, set_thread_interactive
+from .macos import permission_holder, play_sound, set_thread_interactive
 from .pose import AdaptiveFilter, euler_yxz, head_delta, orthonormalize, smoothing_k
 from .state import Shared, diag
 
@@ -267,9 +267,33 @@ class Tracker(threading.Thread):
         return self._held.copy()
 
     def request_recenter(self):
-        with self._lock:
-            self._recenter_samples = []
+        with self.shared.lock:
+            self.shared.airpods_recenter = True
+            camera_off = self.shared.camera_off
+        if not camera_off:  # else the camera keeps its neutral pose, which corrects the AirPods' drift
+            with self._lock:
+                self._recenter_samples = []
         play_sound(self.cfg, "Tink")
+
+    def camera_needed(self) -> bool:
+        """Not while the AirPods turn the view and lean is off."""
+        with self.shared.lock:
+            return self.shared.lean or self.shared.airpods_status != "on" or self._new_camera is not None
+
+    def _camera_off(self):
+        """Wait, with the camera closed, until it's needed again (the AirPods went out, or lean
+        was switched on)."""
+        print("camera: off while the AirPods turn the view and lean is off", flush=True)
+        sh = self.shared
+        with sh.lock:
+            sh.camera_off, sh.face_ok, sh.frame, sh.landmarks, sh.hand_boxes = True, False, None, None, []
+            sh.raw, sh.raw_vel, sh.cam_fps = np.zeros(6), np.zeros(6), 0.0
+        while not sh.quit and not self.camera_needed():
+            time.sleep(0.1)
+        with sh.lock:
+            sh.camera_off = False
+        if not sh.quit:
+            print("camera: on again", flush=True)
 
     def run(self):
         set_thread_interactive()
@@ -285,7 +309,7 @@ class Tracker(threading.Thread):
 
         if not camera_access():
             with self.shared.lock:
-                self.shared.error = ("No camera access. Allow your terminal app (e.g. Terminal) under System "
+                self.shared.error = (f"No camera access. Allow {permission_holder()} under System "
                                      "Settings > Privacy & Security > Camera, then start again.")
             return
         cam = self._wait_for_camera()
@@ -311,7 +335,21 @@ class Tracker(threading.Thread):
             self.shared.cam_rotation, self.shared.cam_rotation_mode = self.rotation, self.rotation_mode
         with vision.FaceLandmarker.create_from_options(opts) as lm, \
                 vision.FaceLandmarker.create_from_options(probe_opts) as probe_lm:
+            unneeded_since = None
             while not self.shared.quit:
+                if self.camera_needed():
+                    unneeded_since = None
+                elif unneeded_since is None:
+                    unneeded_since = time.monotonic()
+                elif time.monotonic() - unneeded_since > 1.0:
+                    cam.close()
+                    self._camera_off()
+                    cam, unneeded_since = self._wait_for_camera(), None
+                    if cam is None:
+                        break
+                    self.filter.reset()
+                    self.prev = None
+                    continue
                 if self._new_camera is not None:
                     cam.close()
                     cam = self._wait_for_camera()

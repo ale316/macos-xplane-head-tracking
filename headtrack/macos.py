@@ -2,10 +2,23 @@
 from __future__ import annotations
 
 import ctypes
+import os
 import subprocess
 import threading
 
+APP_NAME = "X-Plane Head Tracker"
 _activity = None  # must stay referenced, or macOS ends the activity
+
+
+def running_as_app() -> bool:
+    """Opened as X-Plane Head Tracker.app (see install.sh), not run from Terminal. macOS then
+    asks for camera, motion and Input Monitoring access for the app."""
+    return os.environ.get("HEADTRACK_APP") == "1"
+
+
+def permission_holder() -> str:
+    """What to allow under System Settings > Privacy & Security."""
+    return APP_NAME if running_as_app() else "your terminal app (e.g. Terminal)"
 
 
 def disable_app_nap() -> bool:
@@ -58,7 +71,7 @@ MAC_KEYCODES = {
 def start_global_hotkeys(bindings: dict[str, str], actions: dict) -> str:
     """Listen-only Quartz event tap so hotkeys work while X-Plane has focus.
 
-    Needs Input Monitoring permission for the terminal app. Returns a status string.
+    Needs Input Monitoring permission for the app (or terminal) it runs as. Returns a status string.
     """
     try:
         import Quartz
@@ -106,7 +119,7 @@ def start_global_hotkeys(bindings: dict[str, str], actions: dict) -> str:
         Quartz.kCGSessionEventTap, Quartz.kCGHeadInsertEventTap, Quartz.kCGEventTapOptionListenOnly,
         Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown), callback, None)
     if tap is None:
-        return ("global hotkeys OFF: allow your terminal app in System Settings > Privacy & Security > "
+        return (f"global hotkeys OFF: allow {permission_holder()} in System Settings > Privacy & Security > "
                 "Input Monitoring, then restart")
     holder["tap"] = tap
 

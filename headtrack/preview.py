@@ -38,6 +38,8 @@ def status_lines(sh: Shared, cfg: dict) -> list[str]:
         xp = "X-Plane: connected" + (" - DRIVING VIEW" if sh.xp_active else "")
     if sh.paused:
         tr = "Tracking: PAUSED"
+    elif sh.camera_off:
+        tr = "Tracking: AirPods only, camera off while lean is off"
     elif sh.recentering:
         tr = "Tracking: recentering - look at the screen"
     elif not sh.face_ok:
@@ -46,6 +48,8 @@ def status_lines(sh: Shared, cfg: dict) -> list[str]:
         tr = f"Tracking: hand at face - {'holding view' if cfg['hand_at_face'] == 'hold' else 'steadied'}"
     else:
         tr = "Tracking: OK"
+    if sh.airpods_status:
+        tr += f", AirPods {sh.airpods_status}"
     if sh.cam_target_fps and 0 < sh.cam_fps < 0.75 * sh.cam_target_fps:
         xp += f"   camera at {sh.cam_fps:.0f} of {sh.cam_target_fps} fps: Video Effects on? (Control Center)"
     look = f"look +/-{cfg['axes']['yaw']['output_max']:.0f}/{cfg['axes']['pitch']['output_max']:.0f} deg"
@@ -60,7 +64,8 @@ def status_lines(sh: Shared, cfg: dict) -> list[str]:
 
 STATUS_FIELDS = ("error", "xp_connected", "xp_view", "xp_active", "xp_fov", "paused", "recentering", "face_ok",
                  "hand_at_face", "hand_boxes", "smoothing", "lean", "cam_fps", "cam_locked", "cam_target_fps",
-                 "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw", "target", "landmarks")
+                 "cam_name", "cam_rotation", "cam_rotation_mode", "noise", "raw", "target", "landmarks",
+                 "airpods_status", "airpods_rot", "camera_off")
 
 
 def snapshot(sh: Shared, cfg: dict, with_frame: bool) -> dict:
@@ -200,7 +205,9 @@ class PreviewUI:
 
     def draw_camera(self, area, st, frame):
         cw = CAM_H * 4 // 3  # the camera area; a portrait image is drawn narrower inside it
-        if frame is None:
+        if st is not None and st["camera_off"]:
+            text(area, "Camera off: the AirPods turn the view, and lean is off", (20, CAM_H // 2), 0.6, GREY)
+        elif frame is None:
             text(area, "Starting camera...", (20, CAM_H // 2), 0.7, (255, 255, 255), 2)
         else:
             fw = min(cw, round(CAM_H * frame.shape[1] / frame.shape[0]))
@@ -222,8 +229,11 @@ class PreviewUI:
         for i, line in enumerate(wrapped[:7]):
             text(area, line, (x0, 22 + 19 * i), 0.45, (80, 80, 255) if st["error"] else WHITE)
         units = ["deg", "deg", "deg", "cm", "cm", "cm"]
+        raw = st["raw"].copy()
+        if st["airpods_rot"] is not None:  # the rotation that's used
+            raw[:3] = st["airpods_rot"]
         for i, a in enumerate(AXES):
-            text(area, f"{a:>5} {st['raw'][i]:+6.1f} {units[i]:<3} -> {st['target'][i]:+7.2f}", (x0, 170 + 20 * i),
+            text(area, f"{a:>5} {raw[i]:+6.1f} {units[i]:<3} -> {st['target'][i]:+7.2f}", (x0, 170 + 20 * i),
                  0.42, GREY)
 
     def _build_cockpit(self):
@@ -296,14 +306,17 @@ class PreviewUI:
         text(img, value, (SLIDER_X1 + 20, y + 5))
 
     def draw_camera_menu(self, img, button_y: int, st):
-        """The list of cameras, opening upwards from the camera button."""
+        """The list of cameras, opening upwards from the camera button, and below it the switch
+        for turning with AirPods instead."""
         names = (st or {}).get("cam_names") or []
         current = (st or {}).get("cam_index")
         if not names:
             names, current = ["(no cameras found)"], None
-        w = max(cv2.getTextSize(n, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0] for n in names) + 60
+        airpods = bool((st or {}).get("airpods_status"))
+        airpods_label = "Turn with AirPods head tracking"
+        w = max(cv2.getTextSize(n, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0][0] for n in [*names, airpods_label]) + 60
         x0, y1 = SLIDER_X0, button_y - 4
-        y0 = max(0, y1 - 30 * len(names) - 8)
+        y0 = max(0, y1 - 30 * (len(names) + 1) - 16)
         cv2.rectangle(img, (x0, y0), (x0 + w, y1), (55, 55, 55), -1)
         cv2.rectangle(img, (x0, y0), (x0 + w, y1), DIM, 1)
         for i, n in enumerate(names):
@@ -314,6 +327,13 @@ class PreviewUI:
             text(img, n, (x0 + 34, top + 20), color=(240, 240, 240))
             if current is not None:
                 self.menu_items.append(((x0, top, x0 + w, top + 30), ("camera", i)))
+        top = y1 - 34
+        cv2.line(img, (x0 + 8, top - 4), (x0 + w - 8, top - 4), DIM, 1)
+        cv2.rectangle(img, (x0 + 11, top + 8), (x0 + 25, top + 22), GREY, 1)
+        if airpods:
+            cv2.rectangle(img, (x0 + 14, top + 11), (x0 + 22, top + 19), ACCENT, -1)
+        text(img, airpods_label, (x0 + 34, top + 20), color=(240, 240, 240))
+        self.menu_items.append(((x0, top, x0 + w, top + 30), ("airpods", not airpods)))
 
     def button(self, img, x: int, y: int, label: str, cmd: tuple) -> int:
         """Draws a button and registers it for clicks; returns its right edge."""

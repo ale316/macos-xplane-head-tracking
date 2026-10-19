@@ -22,7 +22,7 @@ Everything goes into a folder called **X-Plane Head Tracker** in your home folde
 ## Use
 
 1. In X-Plane, load a flight and switch to the 3D cockpit view (`Shift+9`).
-2. Double-click **Start Head Tracker** in that folder. The first time, allow camera access, then start it again.
+2. Open **X-Plane Head Tracker** in that folder (drag it to the Dock to keep it handy). The first time, allow camera access.
 3. In the preview window, pick your camera, look at the middle of the screen and click **Recenter**.
 
 The preview window also has:
@@ -31,10 +31,11 @@ The preview window also has:
 - **Smoothness:** from snappy to steady.
 - **Lean:** turn moving the view by leaning on or off.
 - **Preview:** switch it off while you fly.
+- **Turn with AirPods head tracking** (in the camera menu): AirPods Pro, Max, 3rd or 4th generation, or Beats with head tracking, turn the view with less lag, and hands or dim light don't disturb them. The camera still does leaning; with **Lean** off, it switches off.
 
 Your settings are saved.
 
-While flying, the hotkeys `Ctrl+Shift+C` (recenter), `Ctrl+Shift+P` (pause) and `Ctrl+Shift+L` (lean) work if Terminal is allowed under System Settings › Privacy & Security › Input Monitoring.
+While flying, the hotkeys `Ctrl+Shift+C` (recenter), `Ctrl+Shift+P` (pause) and `Ctrl+Shift+L` (lean) work if X-Plane Head Tracker is allowed under System Settings › Privacy & Security › Input Monitoring.
 
 ## Tips
 

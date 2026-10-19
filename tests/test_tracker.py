@@ -1,4 +1,6 @@
 """Tracker logic fed with fake MediaPipe results (no camera or face model needed)."""
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,3 +109,30 @@ def test_holding_rewinds_to_before_the_hand(tracker):
         tracker._history.append((i / 30, np.full(6, float(i))))
     assert tracker._pose_before(0.5)[0] == 15
     assert tracker._pose_before(-1)[0] == 0
+
+
+def test_camera_is_only_needed_for_lean_or_without_airpods(tracker):
+    sh = tracker.shared
+    sh.lean, sh.airpods_status = True, "on"
+    assert tracker.camera_needed()
+    sh.lean = False
+    assert not tracker.camera_needed()
+    sh.airpods_status = "waiting"  # out of the ears: the camera turns the view again
+    assert tracker.camera_needed()
+
+
+def test_camera_off_waits_until_needed_and_keeps_its_neutral_pose(tracker):
+    sh = tracker.shared
+    tracker._recenter_samples = None  # already recentered
+    sh.lean, sh.airpods_status, sh.face_ok = False, "on", True
+    off = threading.Thread(target=tracker._camera_off)
+    off.start()
+    time.sleep(0.2)
+    assert sh.camera_off and not sh.face_ok and sh.frame is None
+    tracker.request_recenter()
+    assert sh.airpods_recenter and tracker._recenter_samples is None  # only the AirPods recenter
+    sh.lean = True
+    off.join(1)
+    assert not off.is_alive() and not sh.camera_off
+    tracker.request_recenter()
+    assert tracker._recenter_samples == []

@@ -50,6 +50,11 @@ DEFAULT_CONFIG = {
     # "follow" keeps tracking but steadied, "hold" freezes the view, "off" ignores hands.
     "hand_at_face": "follow",
     "hand_check_hz": 15,
+    # Turn the view with AirPods (Pro, Max, 3rd/4th gen) or Beats head tracking instead of the
+    # camera: less lag, and hands or bad light don't disturb it. The camera still does leaning,
+    # and rotation while they're out; with lean off, it switches off. Needs the tracker opened
+    # as X-Plane Head Tracker.app. Also in the preview's camera menu.
+    "airpods": False,
     # Only drive the view while X-Plane is in the 3D cockpit view.
     "only_in_cockpit_view": True,
     "recenter_frames": 8,
@@ -114,6 +119,7 @@ def save_settings(path: Path, cfg: dict):
     data["camera_id"], data["camera_name"] = cfg["camera_id"], cfg["camera_name"]
     data.pop("camera_index", None)  # older versions picked cameras by number
     data["camera_rotation"] = cfg["camera_rotation"]
+    data["airpods"] = cfg["airpods"]
     data.pop("smoothing_level", None)
     for axis in ("yaw", "pitch"):
         data.setdefault("axes", {}).setdefault(axis, {})["output_max"] = cfg["axes"][axis]["output_max"]

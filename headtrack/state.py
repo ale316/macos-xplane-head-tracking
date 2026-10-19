@@ -72,3 +72,10 @@ class Shared:
         self.xp_view: int | None = None
         self.xp_active = False
         self.xp_fov: float | None = None  # X-Plane's horizontal field of view
+        # written by the AirPods reader (airpods.py)
+        self.airpods_status = ""  # "" when not using AirPods
+        self.airpods_rot: np.ndarray | None = None  # latest head rotation from the AirPods, if lined up
+        self.airpods_vel = np.zeros(3)  # its rate (deg/s), while fresh
+        self.airpods_time = 0.0  # when it arrived; older than airpods.STALE_S: they're out
+        self.airpods_recenter = False  # set by a recenter, cleared once the AirPods took it
+        self.camera_off = False  # not needed while the AirPods turn the view and lean is off

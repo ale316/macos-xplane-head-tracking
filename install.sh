@@ -85,18 +85,52 @@ for ((i = 0; i < ${#MODELS[@]}; i += 3)); do
   fi
 done
 
-# A launcher you can double-click in Finder. Downloaded files are quarantined by macOS;
-# you've just chosen to install from Terminal, so clear that for this folder.
-printf '#!/bin/bash\ncd "$(dirname "$0")" && exec ./run.sh "$@"\n' > "Start Head Tracker.command"
-chmod +x "Start Head Tracker.command" run.sh install.sh
+make_app
+chmod +x run.sh install.sh
+# Downloaded files are quarantined by macOS; you've just chosen to install from Terminal,
+# so clear that for this folder.
 xattr -dr com.apple.quarantine . 2>/dev/null || true
 
 if [ -z "${HEADTRACK_FROM_RUN:-}" ]; then
   say "Installed in: $PWD"
-  echo "Start it by double-clicking \"Start Head Tracker\" in that folder (opening it in Finder now),"
-  echo "or from Terminal with: \"$PWD/run.sh\""
-  open -R "Start Head Tracker.command" 2>/dev/null || true
+  echo "Start it by opening \"$APP\" in that folder (showing it in Finder now)."
+  echo "Drag it to the Dock to keep it handy."
+  open -R "$APP" 2>/dev/null || true
 fi
+}
+
+# The app to open. It runs the tracker in this folder, so macOS asks for camera, motion
+# (AirPods) and Input Monitoring (hotkeys) access for the app rather than for Terminal.
+APP="X-Plane Head Tracker.app"
+make_app() {
+  local version
+  version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' headtrack/__init__.py)
+  rm -rf "$APP" "Start Head Tracker.command"  # the .command started it before there was an app
+  mkdir -p "$APP/Contents/MacOS"
+  cat > "$APP/Contents/Info.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>X-Plane Head Tracker</string>
+  <key>CFBundleIdentifier</key><string>io.github.ale316.xplane-head-tracker</string>
+  <key>CFBundleName</key><string>X-Plane Head Tracker</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$version</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSCameraUsageDescription</key><string>Your head's movement in the camera image turns the X-Plane view.</string>
+  <key>NSMotionUsageDescription</key><string>Your AirPods' head tracking turns the X-Plane view.</string>
+</dict>
+</plist>
+EOF
+  {
+    echo '#!/bin/bash'
+    echo '# Runs the tracker installed in this folder; what it prints goes to ~/Library/Logs.'
+    echo '# Python directly, not run.sh: macOS keeps its own tools out of e.g. ~/Documents.'
+    printf 'cd %q || exit 1\n' "$PWD"
+    echo 'HEADTRACK_APP=1 exec .venv/bin/python -m headtrack "$@" > "$HOME/Library/Logs/X-Plane Head Tracker.log" 2>&1'
+  } > "$APP/Contents/MacOS/X-Plane Head Tracker"
+  chmod +x "$APP/Contents/MacOS/X-Plane Head Tracker"
 }
 
 # Everything above is a function, so a download cut short can't run half an installer.

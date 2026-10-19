@@ -141,9 +141,10 @@ def smoothing_ease(base_s: float, pct: float) -> tuple[float, float]:
 
 
 class Ease:
-    """Final easing of the view: two first-order lags in a row. Compared with one longer lag,
-    the view's speed changes gradually instead of jumping with every camera frame, and it
-    doesn't keep creeping long after the head has stopped (both feel floaty or shaky)."""
+    """Final easing of the view: two first-order lags in a row (times for all axes, or per axis).
+    Compared with one longer lag, the view's speed changes gradually instead of jumping with
+    every camera frame, and it doesn't keep creeping long after the head has stopped (both feel
+    floaty or shaky)."""
 
     def __init__(self, n: int = 6):
         self.first, self.out = np.zeros(n), np.zeros(n)
@@ -152,8 +153,8 @@ class Ease:
         self.first, self.out = value.copy(), value.copy()
 
     def __call__(self, target: np.ndarray, dt: float, taus: tuple[float, float]) -> np.ndarray:
-        self.first += (target - self.first) * (1.0 - math.exp(-dt / max(taus[0], 1e-3)))
-        self.out += (self.first - self.out) * (1.0 - math.exp(-dt / max(taus[1], 1e-3)))
+        self.first += (target - self.first) * (1.0 - np.exp(-dt / np.maximum(taus[0], 1e-3)))
+        self.out += (self.first - self.out) * (1.0 - np.exp(-dt / np.maximum(taus[1], 1e-3)))
         return self.out.copy()
 
 

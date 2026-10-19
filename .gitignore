@@ -2,7 +2,7 @@
 .venv/
 .tools/
 models/
-Start Head Tracker.command
+X-Plane Head Tracker.app/
 
 # your own settings and logs
 config.json
